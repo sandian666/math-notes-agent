@@ -1,5 +1,5 @@
 # ===== S5 / agent.py =====
-import os, json, datetime, chromadb, requests
+import os, json, datetime, chromadb, requests,quota_db
 from openai import OpenAI
 
 # ================= 常量与路径（改造 A） =================
@@ -13,8 +13,6 @@ with open(COLLECTION_FILE,encoding="utf-8") as f:
     COLLECTION_NAME=f.read().strip()
 
 _answer_cache = {}
-max_quota=3
-_call_count={}
 _sessions = {}
 
 # ================= 两个 client（改造 B） =================
@@ -180,20 +178,15 @@ def answer(session_id,question):
             })
 
 #带缓存的问答：同一个问题问过就不再花钱重算.
-def answer_cached(session_id,question):
-    Today=datetime.date.today()
-    cache_key =(session_id,question)
-    if cache_key in _answer_cache:
+def answer_cached(session_id, question):
+    cache_key = (session_id, question)
+    if cache_key in _answer_cache:                        # ① 答过的题白送、不记账
         return _answer_cache[cache_key]
-    else:
-        count=_call_count.get(Today,0)
-        count+=1
-        _call_count[Today]=count
-        if _call_count[Today] > max_quota:
-            result=("今天额度已用完，明天再来吧")
-        else:
-            result=answer(session_id, question)
-            _answer_cache[cache_key]=result
+    if quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
+        return "今天额度已用完，明天再来吧"
+    result = answer(session_id, question)                 # ③ 放行才答题
+    _answer_cache[cache_key] = result
+    quota_db.count_one(question, result)                  # ④ 记账
     return result
 
 
@@ -209,19 +202,12 @@ def stream_answer(session_id, question):
     Today = datetime.date.today()
     cache_key = (session_id, question)
     if cache_key in _answer_cache:
-        yield f"data: {_answer_cache[cache_key]}\n\n"  # 命中缓存 → 一次吐出全文再收工
+        yield f"data: {_answer_cache[cache_key]}\n\n"
         return
-    count = _call_count.get(Today, 0) + 1  # 额度闸
-    if count > max_quota:
-        if cache_key in _answer_cache:            # 额度用完，但这题答过 → 从缓存白送
-            yield f"data: {_answer_cache[cache_key]}\n\n"
-            return
+    if quota_db.used_today() >= quota_db.DAILY_LIMIT:
         yield f"data: 今天额度已用完，明天再来吧\n\n"
         return
-    _call_count[Today] = count
-    if count > max_quota:
-        yield f"data: 今天额度已用完，明天再来吧\n\n"
-        return
+    counted = False  # 一轮回答可能转几圈 while，只许记一次账
     while True:
         tool_buf = {}    # 收集箱：{index: {"id":..., "name":..., "arguments": ""}}
         #作用：把模型流式返回的工具调用碎片拼接成完整工具调用。
@@ -268,7 +254,10 @@ def stream_answer(session_id, question):
             _sessions[session_id] = messages[1:]   # 保留会话历史，并去掉系统提示词
             if text_buf:
                 _answer_cache[cache_key] = text_buf
-            break             # ← 这个 break 在 while 里，合法
+                if not counted:  # 答成才记账
+                    quota_db.count_one(question, text_buf)
+                    counted = True
+            break
         print(f"🔎 第 1 轮拼好的工具调用 = {tool_buf}")
         # —— 有工具要调：先把碎片拼成一条完整的 assistant 消息 ——
         calls = []   # 新建 calls 列表，准备装完整的工具调用对象
