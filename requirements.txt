@@ -3,3 +3,4 @@ chromadb==1.5.9
 openai==3.14.0
 requests==2.34.2
 uvicorn==0.53.0
+pymysql==1.2.3
