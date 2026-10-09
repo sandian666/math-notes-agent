@@ -1,7 +1,7 @@
 # ===== S5 / quota_db.py =====
 # 额度闸的"账本"：把"今天答了几次 + 答过什么"从内存搬进 MySQL(s6 库)
 # 角色关系：pymysql=库；_connect()=每次开门拿出连接；cur=干活的手；commit()=落盘
-import pymysql
+import pymysql,os
 from datetime import date
 
 DAILY_LIMIT = 3          # 每天最多答 3 次  ← 额度只在这一个地方改
@@ -14,7 +14,7 @@ def _connect():
         host="127.0.0.1",
         port=3306,
         user="root",
-        password="root123",
+        password=os.environ["S6_DB_PASSWORD"],
         database="s6",        # 直接报库名，不用再写 USE s6
         charset="utf8mb4",
     )
