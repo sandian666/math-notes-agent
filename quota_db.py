@@ -7,7 +7,7 @@ from dbutils.pooled_db import PooledDB
 
 # 连接参数集中一处，池子拿它反复建连接，把字典中的键值对拆开，作为函数参数传入
 DB = {
-    "host": "127.0.0.1",
+    "host": os.environ.get("S6_DB_HOST", "127.0.0.1"),
     "port": 3306,
     "user": "root",
     "password": os.environ["S6_DB_PASSWORD"],

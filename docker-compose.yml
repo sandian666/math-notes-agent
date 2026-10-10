@@ -1,0 +1,40 @@
+services:
+
+  db:
+    image: mysql:8.0
+    container_name: s5-db
+    restart: unless-stopped  # 除非手动停止，否则 Docker 异常退出后会自动重启
+    environment:
+      MYSQL_ROOT_PASSWORD: ${S6_DB_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql    # 把名为 mysql_data 的 Docker 数据卷挂载到容器内的 MySQL 数据目录
+    healthcheck:  # Docker 会在数据库容器内部执行 mysqladmin ping，检查 MySQL 是否真的可以连接。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .                                # 读 Dockerfile，现做镜像
+    container_name: s5-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy          # 等 db「真能应答」再启动 app
+    ports:
+      - "8000:8000"                         # 宿主机端口:容器端口
+    volumes:
+      - ./chroma_db:/app/chroma_db          #这是本地目录和容器目录之间的映射：
+    environment:
+      - S5_USER=demo
+      - S5_PASSWORD     # 不写等号 =从启动 Docker Compose 的宿主机环境变量中读取同名变量，再传给容器。
+      - ZHIPU_API_KEY
+      - DEEPSEEK_API_KEY
+      - S6_DB_PASSWORD
+      - S6_DB_HOST=db                       # 🔴 服务名当地址
+
+volumes:
+  mysql_data:
+    external: true
+    name: fa24545f100bbb1085733c07e22a30691bf96ee0a0cd8b3588300247548b8d9b
+  
