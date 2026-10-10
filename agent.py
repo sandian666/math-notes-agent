@@ -18,9 +18,9 @@ _sessions = {}
 # ================= 两个 client（改造 B） =================
 embed_client = OpenAI(api_key=os.environ.get("ZHIPU_API_KEY"),
                       base_url="https://open.bigmodel.cn/api/paas/v4/")
-chat_client = OpenAI(api_key=os.environ.get("ali-deepseek-api-key"),
-         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",)
-chat_model = "deepseek-v4.1-flash"
+chat_client = OpenAI(api_key=os.environ.get("DEEPSEEK_API_KEY"),
+         base_url="https://api.deepseek.com/v1",)
+chat_model = "deepseek-flash"      # 官方登记名，小写 + 短横线；你原来那个是"展示名"，不是登记名
 
 # ================= 向量库 =================
 chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)

@@ -15,7 +15,10 @@
     // ===== 新增①：拿到（或新建）本浏览器的会话号 =====
     let sid = localStorage.getItem("s5_sid");   // 去浏览器的"储物柜"找；没有就是 null
     if (!sid) {                                 // 第一次来 → 柜子里没有
-        sid = crypto.randomUUID();              // 生成一个随机会话号（36 位，猜不到）
+                // 安全上下文（https / localhost）才有 randomUUID；http 公网没有 → 退回随机串
+        sid = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : "sid-" + Date.now() + "-" + Math.random().toString(16).slice(2);
         localStorage.setItem("s5_sid", sid);    // 存回柜子 → 以后刷新都还是它
     }
 
