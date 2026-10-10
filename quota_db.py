@@ -3,6 +3,20 @@
 # 角色关系：pymysql=库；_connect()=每次开门拿出连接；cur=干活的手；commit()=落盘
 import pymysql,os
 from datetime import date
+from dbutils.pooled_db import PooledDB
+
+# 连接参数集中一处，池子拿它反复建连接，把字典中的键值对拆开，作为函数参数传入
+DB = {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": os.environ["S6_DB_PASSWORD"],
+    "database": "s6",
+    "charset": "utf8mb4",
+}
+
+# 池子：最多 5 条、最小养 1 条；blocking=True = 借空时「等」
+POOL = PooledDB(creator=pymysql, maxconnections=5, mincached=1, blocking=True, **DB)
 
 DAILY_LIMIT = 3          # 每天最多答 3 次  ← 额度只在这一个地方改
 
@@ -10,14 +24,7 @@ def today_str():
     return date.today().strftime("%Y-%m-%d")   # MySQL 的 DATE 要 "2026-09-30" 这种字符串
 
 def _connect():
-    return pymysql.connect(
-        host="127.0.0.1",
-        port=3306,
-        user="root",
-        password=os.environ["S6_DB_PASSWORD"],
-        database="s6",        # 直接报库名，不用再写 USE s6
-        charset="utf8mb4",
-    )
+    return POOL.connection()
 
 def used_today():
     conn = _connect()
