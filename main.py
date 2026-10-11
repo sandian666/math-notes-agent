@@ -19,10 +19,10 @@
 # ⑧  浏览器显示： 你好，这是 S5 的第一个接口。
 
 from fastapi import FastAPI    #← 从 fastapi 这个库里，取出 FastAPI 这个"类"，（库名小写 fastapi；类名大写 FastAPI，别写混）
-import uvicorn,os                  #← 整个库都要用，所以直接 import 库名
-import base64
+                 #← 整个库都要用，所以直接 import 库名
 from agent import answer_cached,stream_answer        #← 从我自己的 agent.py 里，把 answer 函数拿进来
 from fastapi.responses import HTMLResponse,StreamingResponse
+import uvicorn,os,base64
 
 S5_USER = os.environ.get("S5_USER", "demo") #用户名；没配就默认 demo
 S5_PASSWORD = os.environ.get("S5_PASSWORD")  # 口令不给默认值（拿不到就是 None）
@@ -77,7 +77,7 @@ async def hello():    # ← 定义当一个请求打到 /hello 时，要执行�
 
 @app.get("/ask")  #函数签名：接收两个参数，名字叫question和session_id,类型是 str
 async def ask(question: str,session_id:str):
-    resp = answer_cached(session_id,question)
+    resp = await answer_cached(session_id,question)
     return {"answer": resp}
 
 @app.get("/ask_stream")
@@ -97,7 +97,7 @@ async def index():
 
 #   缩进 4 空格，里面调用 uvicorn.run(...)
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True,
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
                 reload_dirs=[os.path.dirname(os.path.abspath(__file__))])
 
 

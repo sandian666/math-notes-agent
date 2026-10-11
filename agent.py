@@ -1,6 +1,6 @@
 # ===== S5 / agent.py =====
-import os, json, datetime, chromadb, requests,quota_db
-from openai import OpenAI
+import asyncio, os, json, datetime, chromadb, requests, quota_db
+from openai import OpenAI,AsyncOpenAI
 
 # ================= 常量与路径（改造 A） =================
 # 【照抄】把"当前文件所在的文件夹"取出来，得到本py文件所在文件夹，作为基准路径，程序以后放哪里都能跑
@@ -18,7 +18,7 @@ _sessions = {}
 # ================= 两个 client（改造 B） =================
 embed_client = OpenAI(api_key=os.environ.get("ZHIPU_API_KEY"),
                       base_url="https://open.bigmodel.cn/api/paas/v4/")
-chat_client = OpenAI(api_key=os.environ.get("DEEPSEEK_API_KEY"),
+chat_client = AsyncOpenAI(api_key=os.environ["DEEPSEEK_API_KEY"],
          base_url="https://api.deepseek.com/v1",)
 chat_model = "deepseek-flash"      # 官方登记名，小写 + 短横线；你原来那个是"展示名"，不是登记名
 
@@ -144,7 +144,7 @@ tools_map={
 
 # ================= 核心：answer() =================
 #输入会话号 + 问题 → 返回答案；同时把这一轮对话存进该会话
-def answer(session_id,question):
+async def answer(session_id,question):
     history=_sessions.get(session_id,[])  # 第一次来 → 拿不到 → 空列表
     messages = [
         {"role": "system", "content": """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
@@ -155,7 +155,7 @@ def answer(session_id,question):
     ]
 
     while True:                                   # ← 只留【内层】：管"模型 ↔ 工具"的循环
-        resp = chat_client.chat.completions.create(   # 修②：不要引号，不带 s
+        resp = await chat_client.chat.completions.create(   # 修②：不要引号，不带 s
             model=chat_model,
             messages=messages,
             tools=tools,
@@ -170,7 +170,7 @@ def answer(session_id,question):
         for tool_call in msg.tool_calls:          # 修④：下面 4 行必须是【for 里面】的
             function_name = tool_call.function.name
             arg = json.loads(tool_call.function.arguments)
-            result = tools_map[function_name](**arg)
+            result = await asyncio.to_thread(tools_map[function_name], **arg)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
@@ -178,19 +178,19 @@ def answer(session_id,question):
             })
 
 #带缓存的问答：同一个问题问过就不再花钱重算.
-def answer_cached(session_id, question):
+async def answer_cached(session_id, question):
     cache_key = (session_id, question)
     if cache_key in _answer_cache:                        # ① 答过的题白送、不记账
         return _answer_cache[cache_key]
-    if quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
+    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
         return "今天额度已用完，明天再来吧"
-    result = answer(session_id, question)                 # ③ 放行才答题
+    result = await answer(session_id, question)                 # ③ 放行才答题
     _answer_cache[cache_key] = result
-    quota_db.count_one(question, result)                  # ④ 记账
+    await quota_db.count_one(question, result)                  # ④ 记账
     return result
 
 
-def stream_answer(session_id, question):
+async def stream_answer(session_id, question):
     history=_sessions.get(session_id,[])
     messages = [
         {"role": "system", "content": """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
@@ -199,12 +199,11 @@ def stream_answer(session_id, question):
         *history,
         {"role": "user", "content": question},
     ]
-    Today = datetime.date.today()
     cache_key = (session_id, question)
     if cache_key in _answer_cache:
         yield f"data: {_answer_cache[cache_key]}\n\n"
         return
-    if quota_db.used_today() >= quota_db.DAILY_LIMIT:
+    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:
         yield f"data: 今天额度已用完，明天再来吧\n\n"
         return
     counted = False  # 一轮回答可能转几圈 while，只许记一次账
@@ -216,13 +215,13 @@ def stream_answer(session_id, question):
             print(f"🔎 开始流式：session={session_id} question={question!r}")
             n_text = 0          # 收到多少片"正文"
             n_tool = 0          # 收到多少片"工具调用"（正文里的工具碎片不算字）
-            resp = chat_client.chat.completions.create(
+            resp = await chat_client.chat.completions.create(
                 model=chat_model,
                 messages=messages,
                 tools=tools,
                 stream=True,
             )
-            for chunk in resp:                    # ← 一片片取
+            async for chunk in resp:                    # ← 一片片取
                 d = chunk.choices[0].delta    # 拿第一条候选，delta表示这一片新增了什么
                 if d.tool_calls:  # 如果有工具调用信息，就进入分支
                     n_tool += 1    # 工具调用碎片＋1
@@ -255,7 +254,7 @@ def stream_answer(session_id, question):
             if text_buf:
                 _answer_cache[cache_key] = text_buf
                 if not counted:  # 答成才记账
-                    quota_db.count_one(question, text_buf)
+                    await quota_db.count_one(question, text_buf)
                     counted = True
             break
         print(f"🔎 第 1 轮拼好的工具调用 = {tool_buf}")
@@ -275,7 +274,7 @@ def stream_answer(session_id, question):
         for call in calls:
             function_name = call["function"]["name"]
             arg = json.loads(call["function"]["arguments"])  # ← 拼完了才敢 loads
-            result = tools_map[function_name](**arg)
+            result = await asyncio.to_thread(tools_map[function_name], **arg)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],

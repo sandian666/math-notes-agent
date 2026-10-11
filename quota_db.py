@@ -1,67 +1,74 @@
 # ===== S5 / quota_db.py =====
 # 额度闸的"账本"：把"今天答了几次 + 答过什么"从内存搬进 MySQL(s6 库)
-# 角色关系：pymysql=库；_connect()=每次开门拿出连接；cur=干活的手；commit()=落盘
-import pymysql,os
+import os,asyncio,aiomysql
 from datetime import date
-from dbutils.pooled_db import PooledDB
 
-# 连接参数集中一处，池子拿它反复建连接，把字典中的键值对拆开，作为函数参数传入
 DB = {
     "host": os.environ.get("S6_DB_HOST", "127.0.0.1"),
     "port": 3306,
     "user": "root",
     "password": os.environ["S6_DB_PASSWORD"],
-    "database": "s6",
+    "db": "s6",              # ← aiomysql 叫 db（你原来写的 database 是 PooledDB 的叫法）
     "charset": "utf8mb4",
 }
 
-# 池子：最多 5 条、最小养 1 条；blocking=True = 借空时「等」
-POOL = PooledDB(creator=pymysql, maxconnections=5, mincached=1, blocking=True, **DB)
+DAILY_LIMIT = 3          # 每天最多答 3 次  ← 额度只在这一个地方改（压测完改回 3）
 
-DAILY_LIMIT = 3          # 每天最多答 3 次  ← 额度只在这一个地方改
+_pool = None             # 全局唯一的池子
+
+async def get_pool():
+    """第一次要用时才建池 —— create_pool 是 async 的，不能写在模块顶层"""
+    global _pool
+    if _pool is None:
+        _pool = await aiomysql.create_pool(minsize=1, maxsize=5, **DB)
+    return _pool
 
 def today_str():
-    return date.today().strftime("%Y-%m-%d")   # MySQL 的 DATE 要 "2026-09-30" 这种字符串
+    return date.today().strftime("%Y-%m-%d")
 
-def _connect():
-    return POOL.connection()
-
-def used_today():
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT used FROM daily_quota WHERE quota_date = %s", (today_str(),))
-            row = cur.fetchone()      # 今天还没答过 → 没有这一行 → row 是 None
-            return row[0] if row else 0     # 空就按 0 算
-    finally:
-        conn.close()
-
-def count_one(question, answer):
-    """记一次账：日报数 +1（两条 INSERT 一次 commit）"""
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            # 今天有行就 used+1；没行就插一行 used=1（靠 quota_date 的 UNIQUE）
-            cur.execute(
-                "INSERT INTO daily_quota (quota_date, used) VALUES (%s, 1) "
-                "ON DUPLICATE KEY UPDATE used = used + 1",
-                (today_str(),),
+async def used_today():
+    pool = await get_pool()
+    async with pool.acquire() as conn:                 # 借
+        async with conn.cursor() as cur:               # 借手
+            await cur.execute(
+                "SELECT used FROM daily_quota WHERE quota_date = %s", (today_str(),)
             )
-            cur.execute(
-                "INSERT INTO qa_log (question, answer) VALUES (%s, %s)",
-                (question, answer),
-            )
-        conn.commit()               # 一次 commit 把两条 INSERT 一起落盘
-    finally:
-        conn.close()
+            row = await cur.fetchone()
+            return row[0] if row else 0                # 空当 0
+                                                   # async with 结束 = 自动还回池子
 
-# ===== 自测 + 验库（单跑本文件时用） =====
+async def count_one(question, answer):
+    """记一次账：日报数 +1 + 写 qa_log（两条 INSERT 一次 commit）"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO daily_quota (quota_date, used) VALUES (%s, 1) "
+                    "ON DUPLICATE KEY UPDATE used = used + 1",
+                    (today_str(),),
+                )
+                await cur.execute(
+                    "INSERT INTO qa_log (question, answer) VALUES (%s, %s)",
+                    (question, answer),
+                )
+            await conn.commit()                        # 一次 commit 两条一起落盘
+        except Exception:
+            await conn.rollback()
+            raise
+
+# ===== 自测 + 验库（单跑本文件时用）=====
+async def _selftest():
+    print("今日已用 =", await used_today(), "/", DAILY_LIMIT)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM daily_quota")
+            print("daily_quota:", await cur.fetchall())
+            await cur.execute("SELECT id, question, created_at FROM qa_log")
+            print("qa_log:", await cur.fetchall())
+    pool.close()
+    await pool.wait_closed()
+
 if __name__ == "__main__":
-    print("今日已用 =", used_today(), "/", DAILY_LIMIT)
-    conn = _connect()
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM daily_quota")
-        print("daily_quota:", cur.fetchall())
-        cur.execute("SELECT id, question, created_at FROM qa_log")
-        print("qa_log:", cur.fetchall())
-    conn.close()
+    asyncio.run(_selftest())
