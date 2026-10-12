@@ -1,6 +1,12 @@
 # ===== S5 / agent.py =====
 import asyncio, os, json, datetime, chromadb, requests, quota_db
 from openai import OpenAI,AsyncOpenAI
+from typing import Annotated, Literal, TypedDict
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 
 # ================= 常量与路径（改造 A） =================
 # 【照抄】把"当前文件所在的文件夹"取出来，得到本py文件所在文件夹，作为基准路径，程序以后放哪里都能跑
@@ -28,7 +34,8 @@ col_b = chroma_client.get_collection(name=COLLECTION_NAME)
 
 # ================= 4 个工具函数 =================
 
-def search_notes(question):# 把问题转换成向量数据，然后取第一个数据的向量
+def search_notes(question: str) -> str: # 把问题转换成向量数据，然后取第一个数据的向量
+    """根据用户提出的问题检索高中数学笔记，返回最相关的片段和来源小节。用户询问高中数学知识时调用。"""
     qv = embed_client.embeddings.create(model="embedding-3", input=[question]).data[0].embedding
     result= col_b.query(query_embeddings=[qv], n_results=3)  # 问题向量与chunk向量对比相似度，取n_result个结果
     docs, meta = result["documents"][0], result["metadatas"][0]
@@ -38,7 +45,8 @@ def search_notes(question):# 把问题转换成向量数据，然后取第一个
     return result
 
 
-def get_weather(city):
+def get_weather(city: str) -> str:
+    """查询某个城市的当前天气。"""
     url = f"https://wttr.in/{city}?format=j1"
     try:  # json() 先执行 → 对着 500 的错误页解析 → 抛 JSONDecodeError
         # JSONDecodeError 不是 RequestException 的子类 → except requests.exceptions.RequestException 接不住
@@ -56,12 +64,14 @@ def get_weather(city):
         return f"查询{city}天气失败：{e}"
 
 
-def get_time():
+def get_time() -> str:
+    """获取当前的日期和时间。用户问现在几点、今天几号时调用。"""
     now = datetime.datetime.now()  # 调用datetime模块的datetime类的now方法
     return now.strftime('%Y-%m-%d %H:%M:%S')  # 直接返回字符串，不要花括号
 
 
-def calculate(a, b, op):
+def calculate(a: int, b: int, op: Literal["+", "-", "*", "/"]) -> str:
+    """对两个整数执行四则运算。op 只能是 + - * / 之一。"""
     a = int(a)
     b = int(b)
     if op == "+":
@@ -142,6 +152,66 @@ tools_map={
     "search_notes":search_notes
 }                           # 4 个工具的说明书
 
+# ================= LangGraph 版 Agent 图 =================
+SYSTEM_PROMPT = """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
+你要根据文本检索相关内容并标明出处回答，若该知识文本没有请回复没有检索到相关内容。
+用户询问天气、时间或需要计算时，调用相应的工具。"""
+
+# 把 4 个原始函数"包装成"模型能选用的工具（用 docstring 当描述、类型标注当参数表）
+LC_TOOLS = [tool(search_notes), tool(get_weather), tool(get_time), tool(calculate)]
+LC_TOOL_MAP = {t.name: t for t in LC_TOOLS}
+
+lc_llm = ChatOpenAI(
+    model=chat_model,
+    base_url="https://api.deepseek.com/v1",
+    api_key=os.environ["DEEPSEEK_API_KEY"],
+)
+lc_llm_with_tools = lc_llm.bind_tools(LC_TOOLS)
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+#每个节点返回的新消息，要追加到旧消息列表后面，而不是覆盖原列表。
+
+async def lc_call_model(state: AgentState):
+    print(f"🔵 [图] call_model：现有 {len(state['messages'])} 条消息")
+    resp = await lc_llm_with_tools.ainvoke(state["messages"])  # 把完整消息历史交给模型，异步等待模型返回结果
+    return {"messages": [resp]}  # 只返回新消息，靠 reducer 追加
+
+
+async def lc_run_tools(state: AgentState):
+    out = []
+    for tc in state["messages"][-1].tool_calls:
+        print(f"🔧 [图] 执行工具 {tc['name']}({tc['args']})")
+        # 工具里有同步的 chromadb / embedding 网络请求 → 丢线程池（批② 的结论）
+        result = await asyncio.to_thread(LC_TOOL_MAP[tc["name"]].invoke, tc["args"])
+        out.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+    return {"messages": out}
+
+
+def lc_should_continue(state: AgentState) -> str:
+    return "tools" if state["messages"][-1].tool_calls else END
+
+
+_lc_builder = StateGraph(AgentState)   # 创建构建器
+_lc_builder.add_node("model", lc_call_model)
+_lc_builder.add_node("tools", lc_run_tools)
+_lc_builder.add_edge(START, "model")
+_lc_builder.add_conditional_edges("model", lc_should_continue, {"tools": "tools", END: END})
+_lc_builder.add_edge("tools", "model")             # 🔴 环
+agent_graph = _lc_builder.compile()    # 生成可执行图
+
+_sessions_lc = {}        # 图版的历史（存 LangChain 消息对象）—— 暂时跟 _sessions 各存各的
+
+
+async def graph_answer(session_id, question):
+    """跟 answer() 同样的活，但走图"""
+    history = _sessions_lc.get(session_id, [])
+    msgs = [SystemMessage(SYSTEM_PROMPT), *history, HumanMessage(question)] #  *history 的作用是：把历史消息逐条插入到当前消息列表中。
+    out = await agent_graph.ainvoke({"messages": msgs})
+    _sessions_lc[session_id] = out["messages"][1:]      # 去掉 system，跟老版一致，下一次调用时，函数会重新添加最新的系统提示词
+    return out["messages"][-1].content   # 返回模型最终生成的回答
+
 # ================= 核心：answer() =================
 #输入会话号 + 问题 → 返回答案；同时把这一轮对话存进该会话
 async def answer(session_id,question):
@@ -155,7 +225,7 @@ async def answer(session_id,question):
     ]
 
     while True:                                   # ← 只留【内层】：管"模型 ↔ 工具"的循环
-        resp = await chat_client.chat.completions.create(   # 修②：不要引号，不带 s
+        resp = await chat_client.chat.completions.create(
             model=chat_model,
             messages=messages,
             tools=tools,
@@ -165,11 +235,13 @@ async def answer(session_id,question):
 
         if not msg.tool_calls: # 模型不再要工具 → 这就是最终答案
             _sessions[session_id] =messages[1:]       #存历史
-            return msg.content                    # 修③：返回，不打印
+            return msg.content
 
-        for tool_call in msg.tool_calls:          # 修④：下面 4 行必须是【for 里面】的
+        for tool_call in msg.tool_calls:
             function_name = tool_call.function.name
             arg = json.loads(tool_call.function.arguments)
+            # 把这个同步函数交给线程池执行，当前异步任务等待它完成，但不阻塞事件循环
+            #使用的是 asyncio 的默认线程池，不需要手动管理
             result = await asyncio.to_thread(tools_map[function_name], **arg)
             messages.append({
                 "role": "tool",
@@ -184,107 +256,56 @@ async def answer_cached(session_id, question):
         return _answer_cache[cache_key]
     if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
         return "今天额度已用完，明天再来吧"
-    result = await answer(session_id, question)                 # ③ 放行才答题
+    result = await graph_answer(session_id, question)                 # ③ 放行才答题
     _answer_cache[cache_key] = result
     await quota_db.count_one(question, result)                  # ④ 记账
     return result
 
 
 async def stream_answer(session_id, question):
-    history=_sessions.get(session_id,[])
-    messages = [
-        {"role": "system", "content": """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
-        你要根据文本检索相关内容并标明出处回答，若该知识文本没有请回复没有检索到相关内容。
-        用户询问天气、时间或需要计算时，调用相应的工具。"""},
-        *history,
-        {"role": "user", "content": question},
-    ]
+    """图版流式：把 while True 换成 agent_graph.astream"""
     cache_key = (session_id, question)
-    if cache_key in _answer_cache:
+    if cache_key in _answer_cache:                       # ① 白送
         yield f"data: {_answer_cache[cache_key]}\n\n"
         return
-    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:
+    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ② 拦
         yield f"data: 今天额度已用完，明天再来吧\n\n"
         return
-    counted = False  # 一轮回答可能转几圈 while，只许记一次账
-    while True:
-        tool_buf = {}    # 收集箱：{index: {"id":..., "name":..., "arguments": ""}}
-        #作用：把模型流式返回的工具调用碎片拼接成完整工具调用。
-        text_buf = ""    # 这一轮吐出来的正文（边流边攒，用来存历史）
-        try:
-            print(f"🔎 开始流式：session={session_id} question={question!r}")
-            n_text = 0          # 收到多少片"正文"
-            n_tool = 0          # 收到多少片"工具调用"（正文里的工具碎片不算字）
-            resp = await chat_client.chat.completions.create(
-                model=chat_model,
-                messages=messages,
-                tools=tools,
-                stream=True,
-            )
-            async for chunk in resp:                    # ← 一片片取
-                d = chunk.choices[0].delta    # 拿第一条候选，delta表示这一片新增了什么
-                if d.tool_calls:  # 如果有工具调用信息，就进入分支
-                    n_tool += 1    # 工具调用碎片＋1
-                    for tc in d.tool_calls:   # 遍历这一批工具调用片段
-                        # 通过 tc.index 找到这个工具调用的“槽位”，setdefault 的作用：有就复位，没有就创造。
-                        slot = tool_buf.setdefault(tc.index, {"id": None,
-                                                              "name": None, "arguments": ""})
-                        # 判空再赋值
-                        if tc.id:      # 如果这段工具调用包含 id，就设置进去
-                            slot["id"] = tc.id
-                        if tc.function and tc.function.name:  # 如果有函数名字段，就保存它
-                            slot["name"] = tc.function.name
-                        if tc.function and tc.function.arguments:  # 如果函数参数片段存在，就拼接到参数字符串里
-                            slot["arguments"] += tc.function.arguments  # 由于流式返回可能分成很多段，所以不能直接覆盖，要累加。
-                piece = d.content         # ← 取出这次增量返回的正文内容。
-                if piece:                 # ← None 就跳过
-                    n_text += 1           # ← 正文片段计数＋1
-                    piece = piece.replace("\n", " ")    # 把正文里的换行先换掉，防止浏览器识别成消息结束
-                    text_buf += piece
-                    yield f"data: {piece}\n\n"   # 直接把这段正文以 SSE 格式发给前端。
-            print(f"🔎 流结束：正文片数={n_text} 工具片数={n_tool}")
-        except Exception as e:
-            # 别再静默断流：把错误原样推到页面上，看得见才好查
-            print("❌ stream_answer 出错：", repr(e))
-            yield f"data: 【流式中断】{type(e).__name__}: {e}\n\n"  #把错误内容发给前端，让页面显示“流式中断”。
-        if not tool_buf:        # 这一轮没有工具调用 = 这就是最终答案 → 存历史、收工
-            if text_buf:
-                messages.append({"role": "assistant", "content": text_buf})
-            _sessions[session_id] = messages[1:]   # 保留会话历史，并去掉系统提示词
-            if text_buf:
-                _answer_cache[cache_key] = text_buf
-                if not counted:  # 答成才记账
-                    await quota_db.count_one(question, text_buf)
-                    counted = True
-            break
-        print(f"🔎 第 1 轮拼好的工具调用 = {tool_buf}")
-        # —— 有工具要调：先把碎片拼成一条完整的 assistant 消息 ——
-        calls = []   # 新建 calls 列表，准备装完整的工具调用对象
-        for idx, slot in sorted(tool_buf.items()):    # 按工具调用的索引排序
-            #把一个完整工具调用加入列表
-            calls.append({
-                "id": slot["id"],
-                "type": "function",
-                "function": {"name": slot["name"], "arguments": slot["arguments"]},
-            })
-            # 表明这是函数类型工具调用
-        messages.append({"role": "assistant", "content": None, "tool_calls": calls})
 
-        # —— 执行工具
-        for call in calls:
-            function_name = call["function"]["name"]
-            arg = json.loads(call["function"]["arguments"])  # ← 拼完了才敢 loads
-            result = await asyncio.to_thread(tools_map[function_name], **arg)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call["id"],
-                "content": result,
-            })
-        # 注意：这里【不要 break】→ 回到 while 顶部，再问模型一次，那一轮才吐正文
+    history = _sessions_lc.get(session_id, [])           # ← 换成图版历史
+    msgs = [SystemMessage(SYSTEM_PROMPT), *history, HumanMessage(question)]
+
+    text_buf = ""          # 攒这一轮的正文（用来存缓存 + 写 qa_log）
+    n_text = 0
+    final_state = None
+    try:
+        print(f"🔎 [图-流] 开始：session={session_id} question={question!r}")
+        async for mode, payload in agent_graph.astream(
+            {"messages": msgs}, stream_mode=["messages", "values"]
+        ):
+            if mode == "messages":
+                chunk, meta = payload
+                if meta.get("langgraph_node") == "model" and chunk.content:
+                    n_text += 1
+                    piece = chunk.content.replace("\n", " ")     # 换行会把 SSE 切坏
+                    text_buf += piece
+                    yield f"data: {piece}\n\n"
+            else:                                            # mode == "values"
+                final_state = payload                        # 最后一次就是最终状态
+        print(f"🔎 [图-流] 结束：正文片数={n_text}")
+    except Exception as e:
+        print("❌ [图-流] stream_answer 出错：", repr(e))
+        yield f"data: 【流式中断】{type(e).__name__}: {e}\n\n"
+
+    if final_state is not None:                              # ③ 存历史
+        _sessions_lc[session_id] = final_state["messages"][1:]
+    if text_buf:                                             # ④ 答成才记账
+        _answer_cache[cache_key] = text_buf
+        await quota_db.count_one(question, text_buf)
 
 # ================= 自测（改造 D） =================
 if __name__ == "__main__":
     print("自检：", col_b.name, col_b.count())          # 期望：math_note_V7 59
-    print(answer("t1","奇变偶不变是什么口诀？"))
+    print(asyncio.run(answer("t1","奇变偶不变是什么口诀？")))
 
 
