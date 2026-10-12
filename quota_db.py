@@ -53,7 +53,7 @@ async def count_one(question, answer):
                     (question, answer),
                 )
             await conn.commit()                        # 一次 commit 两条一起落盘
-        except Exception:
+        except Exception:  # 如果中间出错，先回滚再把错误抛出去
             await conn.rollback()
             raise
 

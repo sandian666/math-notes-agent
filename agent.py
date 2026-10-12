@@ -1,6 +1,6 @@
 # ===== S5 / agent.py =====
-import asyncio, os, json, datetime, chromadb, requests, quota_db
-from openai import OpenAI,AsyncOpenAI
+import asyncio, os, datetime, chromadb, requests, quota_db
+from openai import OpenAI
 from typing import Annotated, Literal, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
@@ -19,13 +19,10 @@ with open(COLLECTION_FILE,encoding="utf-8") as f:
     COLLECTION_NAME=f.read().strip()
 
 _answer_cache = {}
-_sessions = {}
 
-# ================= 两个 client（改造 B） =================
+# ================= client（改造 B） =================
 embed_client = OpenAI(api_key=os.environ.get("ZHIPU_API_KEY"),
                       base_url="https://open.bigmodel.cn/api/paas/v4/")
-chat_client = AsyncOpenAI(api_key=os.environ["DEEPSEEK_API_KEY"],
-         base_url="https://api.deepseek.com/v1",)
 chat_model = "deepseek-flash"      # 官方登记名，小写 + 短横线；你原来那个是"展示名"，不是登记名
 
 # ================= 向量库 =================
@@ -87,71 +84,6 @@ def calculate(a: int, b: int, op: Literal["+", "-", "*", "/"]) -> str:
     else:
         return f"不支持的运算符：{op}"
 
-# ================= tools + tools_map =================
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "查询某个城市的当前天气。",
-            "parameters": {
-                "type": "object",
-                "properties": {"city": {"type": "string", "description": "城市名，如 北京"}},
-                "required": ["city"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_time",
-            "description": "获取当前的日期和时间。当用户询问现在几点、今天几号时使用。",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "对两个整数执行四则运算并返回结果。当用户需要做加减乘除计算时使用.",
-            "parameters": {
-                "type": "object",
-                "properties": {"a": {"type": "integer", "description": "第一个运算数"},
-                               "b": {"type": "integer", "description": "第二个运算数"},
-                               "op":{"type": "string",
-                                     "enum":["+","-","*","/"],   #enum = 枚举，作用是把取值限定在给定的列表里
-                                     "description":"要执行的运算类型。"}
-                               },
-                "required": ["a","b","op"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_notes",
-            "description": "根据用户提出的问题检索文本得到答案，当用户询问有关高中数学知识的问题时，调用此函数。",
-            "parameters": {
-                            "type": "object",
-                            "properties": {"question":{
-                                               "type":"string",
-                                               "description": "从笔记里查询问题答案，答案尽可能科学严谨。"}
-                            },
-                            "required": ["question"] }
-            }
-    },
-]
-
-tools_map={
-    "get_weather":get_weather,
-    "get_time":get_time,
-    "calculate":calculate,
-    "search_notes":search_notes
-}                           # 4 个工具的说明书
-
 # ================= LangGraph 版 Agent 图 =================
 SYSTEM_PROMPT = """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
 你要根据文本检索相关内容并标明出处回答，若该知识文本没有请回复没有检索到相关内容。
@@ -201,53 +133,16 @@ _lc_builder.add_conditional_edges("model", lc_should_continue, {"tools": "tools"
 _lc_builder.add_edge("tools", "model")             # 🔴 环
 agent_graph = _lc_builder.compile()    # 生成可执行图
 
-_sessions_lc = {}        # 图版的历史（存 LangChain 消息对象）—— 暂时跟 _sessions 各存各的
+_sessions_lc = {}        # 图版会话历史（存 LangChain 消息对象）
 
 
 async def graph_answer(session_id, question):
-    """跟 answer() 同样的活，但走图"""
+    """跟老版 answer() 同样的活，但走图"""
     history = _sessions_lc.get(session_id, [])
     msgs = [SystemMessage(SYSTEM_PROMPT), *history, HumanMessage(question)] #  *history 的作用是：把历史消息逐条插入到当前消息列表中。
     out = await agent_graph.ainvoke({"messages": msgs})
     _sessions_lc[session_id] = out["messages"][1:]      # 去掉 system，跟老版一致，下一次调用时，函数会重新添加最新的系统提示词
     return out["messages"][-1].content   # 返回模型最终生成的回答
-
-# ================= 核心：answer() =================
-#输入会话号 + 问题 → 返回答案；同时把这一轮对话存进该会话
-async def answer(session_id,question):
-    history=_sessions.get(session_id,[])  # 第一次来 → 拿不到 → 空列表
-    messages = [
-        {"role": "system", "content": """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
-        你要根据文本检索相关内容并标明出处回答，若该知识文本没有请回复没有检索到相关内容。
-        用户询问天气、时间或需要计算时，调用相应的工具。"""},
-        *history,
-        {"role": "user", "content": question},
-    ]
-
-    while True:                                   # ← 只留【内层】：管"模型 ↔ 工具"的循环
-        resp = await chat_client.chat.completions.create(
-            model=chat_model,
-            messages=messages,
-            tools=tools,
-        )
-        msg = resp.choices[0].message
-        messages.append(msg.to_dict())
-
-        if not msg.tool_calls: # 模型不再要工具 → 这就是最终答案
-            _sessions[session_id] =messages[1:]       #存历史
-            return msg.content
-
-        for tool_call in msg.tool_calls:
-            function_name = tool_call.function.name
-            arg = json.loads(tool_call.function.arguments)
-            # 把这个同步函数交给线程池执行，当前异步任务等待它完成，但不阻塞事件循环
-            #使用的是 asyncio 的默认线程池，不需要手动管理
-            result = await asyncio.to_thread(tools_map[function_name], **arg)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
-            })
 
 #带缓存的问答：同一个问题问过就不再花钱重算.
 async def answer_cached(session_id, question):
@@ -306,6 +201,4 @@ async def stream_answer(session_id, question):
 # ================= 自测（改造 D） =================
 if __name__ == "__main__":
     print("自检：", col_b.name, col_b.count())          # 期望：math_note_V7 59
-    print(asyncio.run(answer("t1","奇变偶不变是什么口诀？")))
-
-
+    print(asyncio.run(graph_answer("t1","奇变偶不变是什么口诀？")))
