@@ -8,3 +8,4 @@ DBUtils==3.2.0
 aiomysql==0.3.2
 langgraph==1.2.14
 langchain-openai==1.7.0
+mcp==2.3.0

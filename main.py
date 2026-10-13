@@ -1,33 +1,13 @@
 # ===== S5 / main.py =====
-# 门面：负责"谁会来敲门、敲哪个门、把话递给谁"。
-#流程：
-# ①  别人在浏览器敲： http://127.0.0.1:8000/hello
-#                     └ 找 127.0.0.1 这台机器的 8000 端口
-#                                    ↓
-# ②  uvicorn 正在这个端口上【听】 → 听到敲门，接下这个请求
-#                                    ↓
-# ③  uvicorn 把请求交给 FastAPI： "有人找 /hello"
-#                                    ↓
-# ④  FastAPI 查【注册表】 →  查到： /hello 归 hello 函数管
-#                                    ↓
-# ⑤  调用 hello() → 执行函数体 → 拿到返回值 "你好…"
-#                                    ↓
-# ⑥  FastAPI 把返回值转成 JSON（正文带引号）
-#                                    ↓
-# ⑦  uvicorn 把它作为 HTTP 响应发回去
-#                                    ↓
-# ⑧  浏览器显示： 你好，这是 S5 的第一个接口。
-
-from fastapi import FastAPI    #← 从 fastapi 这个库里，取出 FastAPI 这个"类"，（库名小写 fastapi；类名大写 FastAPI，别写混）
-                 #← 整个库都要用，所以直接 import 库名
-from agent import answer_cached,stream_answer        #← 从我自己的 agent.py 里，把 answer 函数拿进来
+from fastapi import FastAPI
+from agent import answer_cached,stream_answer
 from fastapi.responses import HTMLResponse,StreamingResponse
 import uvicorn,os,base64
 
 S5_USER = os.environ.get("S5_USER", "demo") #用户名；没配就默认 demo
 S5_PASSWORD = os.environ.get("S5_PASSWORD")  # 口令不给默认值（拿不到就是 None）
 
-# ===== gate v2：引导页 + cookie（2026-09-21 加）=====
+# 引导页 + cookie
 COOKIE_NAME = "s5_ok"        # 口令通过后发给浏览器的"小凭证"的名字
 
 LOGIN_PAGE = """<!DOCTYPE html>
@@ -45,10 +25,21 @@ LOGIN_PAGE = """<!DOCTYPE html>
 </html>
 """
 
-app = FastAPI()   #   造一个 app 对象。（括号不能省；名字就叫 app，后面两处都要用这个名字
+from contextlib import asynccontextmanager
 
-# ===== 第 3 件东西：接口函数
-#   注意顺序：装饰器必须在【函数定义的上一行】，紧挨着，中间不能空行、不能有别的东西
+import agent
+import mcp_bridge
+
+@asynccontextmanager
+async def app_lifespan(app):
+    tools = await mcp_bridge.startup()      # 启动：连 MCP，拿工具
+    agent.add_mcp_tools(tools)              # 并进图里那张工具表
+    yield  # lifespan() 暂停，并把控制权交还给 FastAPI，当停止 FastAPI 服务时，程序会继续执行 yield 后面的代码
+    await mcp_bridge.shutdown()             # 关闭：收尾
+
+app = FastAPI(lifespan=app_lifespan)   # 创建一个 FastAPI 应用，并告诉它使用我定义的 lifespan 函数来管理启动和关闭过程。
+
+
 @app.middleware("http")  #注册中间件 = "每个 HTTP 请求先过这一关"
 async def require_password(request, call_next):
     # ① 之前输对过 → 浏览器带着 cookie 来了 → 直接放行

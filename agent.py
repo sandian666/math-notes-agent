@@ -92,6 +92,13 @@ SYSTEM_PROMPT = """你是一个严谨的老师，用户询问关于高中数学�
 # 把 4 个原始函数"包装成"模型能选用的工具（用 docstring 当描述、类型标注当参数表）
 LC_TOOLS = [tool(search_notes), tool(get_weather), tool(get_time), tool(calculate)]
 LC_TOOL_MAP = {t.name: t for t in LC_TOOLS}
+def add_mcp_tools(extra):
+    """把 MCP 来的工具并进工具表（服务启动时调用一次）"""
+    global lc_llm_with_tools
+    LC_TOOLS.extend(extra)
+    LC_TOOL_MAP.update({t.name: t for t in extra})  # 更新工具名字映射表
+    lc_llm_with_tools = lc_llm.bind_tools(LC_TOOLS) # 重新绑定模型工具
+    print(f"🔌 [MCP] 已并入 {len(extra)} 个工具，当前共 {len(LC_TOOLS)} 个")
 
 lc_llm = ChatOpenAI(
     model=chat_model,
@@ -116,10 +123,9 @@ async def lc_run_tools(state: AgentState):
     for tc in state["messages"][-1].tool_calls:
         print(f"🔧 [图] 执行工具 {tc['name']}({tc['args']})")
         # 工具里有同步的 chromadb / embedding 网络请求 → 丢线程池（批② 的结论）
-        result = await asyncio.to_thread(LC_TOOL_MAP[tc["name"]].invoke, tc["args"])
+        result = await LC_TOOL_MAP[tc["name"]].ainvoke(tc["args"])
         out.append(ToolMessage(content=result, tool_call_id=tc["id"]))
     return {"messages": out}
-
 
 def lc_should_continue(state: AgentState) -> str:
     return "tools" if state["messages"][-1].tool_calls else END
