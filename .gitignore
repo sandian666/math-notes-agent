@@ -28,3 +28,8 @@ apikey.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# --- 7. 运行数据：会话库（含 -wal / -shm 临时文件）与测试产物 ---
+#     本机产生、可重新生成，且 checkpoints 表会一直长 → 不该进仓库
+sessions*.db*
+my_notes.txt

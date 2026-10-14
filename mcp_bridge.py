@@ -21,7 +21,7 @@ TYPE_MAP = {"integer": int, "number": float, "string": str,
 
 
 def json_schema_to_model(tool_name: str, schema: dict):
-    """① MCP 的 JSON Schema → pydantic 模型（LangChain 要的形状）"""
+    """① MCP 的 JSON Schema 参数描述 → pydantic 参数模型（LangChain 要的形状）"""
     props = schema.get("properties") or {}            # 取得所有参数定义。
     required = set(schema.get("required") or [])      # 读取必填参数
     fields = {}
