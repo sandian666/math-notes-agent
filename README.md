@@ -55,6 +55,7 @@
 | `obs.py` | 结构化日志：每轮问答追加一行 JSON 到 `logs/run.jsonl`，并提供汇总（延迟 / token / 工具分布 / 重试） |
 | `index.html` | 提问页面：原生 JS + `EventSource`，`session_id` 存 localStorage |
 | `init_db.py` / `create_db.py` | 一次性建表 / 建向量库脚本 |
+| `reset_quota.py` | 把**今天**的额度计数清零（只动今天那一行，方便演示前重置） |
 | `eval/run_eval.py` / `eval/cases.jsonl` | 评测跑分器 + 用例集：规则判分、故障注入（慢桩/报错桩）、两轮对比 |
 | `eval.cmd` | 评测入口：自动用项目 `.venv` 的 python，不用手动激活 |
 | `Dockerfile` / `docker-compose.yml` | 容器化编排（app + MySQL；容器启动时自动跑 `init_db.py`） |
@@ -108,10 +109,13 @@ python -m venv .venv
 pip install -r requirements.txt
 python init_db.py                 # 建 MySQL 表
 python create_db.py               # 建向量库
-python main.py
+python main.py                    # 默认【不带】热重载（和线上/容器同款跑法）
 ```
 
 需要一个可连的 MySQL：设 `S6_DB_HOST`（默认 `127.0.0.1`）和 `S6_DB_PASSWORD`。
+
+> **本地改代码想自动重启**（只有开发才需要）：设 `S5_RELOAD=1` 再跑 `python main.py`。
+> 默认**关**着 —— 热重载会在后台多起一个 WatchFiles 监视进程、文件一改就重启，线上 / 容器里不该带（见 `main.py` 的 `if __name__ == "__main__"`）。
 
 ---
 
@@ -212,7 +216,8 @@ system 提示词要求"基于给定材料回答 + 必须标明出处" → 抑制
 - **重启不丢**：进程重启后同一个 `session_id` 接着聊，上文还在；
 - 🔴 **懒加载**：模块导入时还没有事件循环，`AsyncSqliteSaver` 构造会直接报错 → 等**第一次真的要跑图**时才连库 + 装配；
 - 🔴 **SystemMessage 每轮现拼、不入库**：状态现在会被永久存下来，每轮都塞一条 system 就会在库里越攒越多 → 只把历史里非 system 的消息拿出来，前面补一份新的；
-- **代价**：多一个 `.db` 文件要管（已进 `.gitignore`）、存档格式跟着库版本走。
+- **代价**：多一个 `.db` 文件要管（已进 `.gitignore`）、存档格式跟着库版本走；
+- **为什么不自己写**：早期真手写过一版 `session_store.py`（自己开 SQLite、自己把消息列表序列化成 JSON），并发、部分写、消息格式演进全得自己扛 → 最后换成官方 Checkpointer，那版已删。
 
 ### 9. 工具健壮性：超时 / 幂等重试 / 危险工具人工确认
 
@@ -250,7 +255,7 @@ system 提示词要求"基于给定材料回答 + 必须标明出处" → 抑制
 - `print` 和 `obs.py` 并存，还没统一到 `logging`
 - MCP server 是子进程，**没有崩溃重启**机制
 - **结构化输出还没接进 `/ask`**：只在探针里验证过
-- `thread_info` / `session_store.py` 是早期自研的存档写法，**已被官方 Checkpointer 取代，现在是死代码**（待删）
+- `thread_info()`（查会话历史）只在探针里用，**没有界面 / 接口暴露它**；手写存档那版 `session_store.py` 已删
 - 观测只在**本机文件**里（`logs/run.jsonl`），没有集中式观测（未接 LangSmith / OTel）
 
 ---

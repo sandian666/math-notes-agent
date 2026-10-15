@@ -88,7 +88,12 @@ async def index():
 
 #   缩进 4 空格，里面调用 uvicorn.run(...)
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
-                reload_dirs=[os.path.dirname(os.path.abspath(__file__))])
+    # 🔴 热重载（reload）是【开发用】的：它会在后台多起一个 WatchFiles 监视进程，
+    #    盯着代码文件，一改动就重启。线上 / 容器里不该带（多一个进程 + 无故重启 = 风险面）。
+    #    所以默认【关】；本地改代码想自动重启时：设 S5_RELOAD=1 再跑 python main.py
+    _reload = os.environ.get("S5_RELOAD") == "1"
+    _reload_dirs = [os.path.dirname(os.path.abspath(__file__))] if _reload else None
+    uvicorn.run("main:app", host="0.0.0.0", port=8000,
+                reload=_reload, reload_dirs=_reload_dirs)
 
 
