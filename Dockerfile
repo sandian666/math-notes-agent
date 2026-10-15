@@ -12,7 +12,7 @@
  #启动 python main.py
 
 # 1. 底座：沿用刚才那个 python 精简版
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # 2. 镜像里的工作目录
 WORKDIR /app
@@ -26,5 +26,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. 再把其余代码复制进去
 COPY . .
 
-# 6. 容器启动时执行的那一句
-CMD ["python", "main.py"]
+# 6. 容器启动时执行：先建库建表（init_db 幂等），再起服务
+CMD ["sh", "-c", "python init_db.py && python main.py"]

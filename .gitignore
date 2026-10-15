@@ -33,3 +33,10 @@ desktop.ini
 #     本机产生、可重新生成，且 checkpoints 表会一直长 → 不该进仓库
 sessions*.db*
 my_notes.txt
+
+# --- 8. 运行日志与评测报告：跑一次长一批，全是可再生的产物 → 只留代码与用例 ---
+#     logs/        结构化日志（obs.py 写，logs/.gitignore 里也挡了一层）
+#     eval/report_* 每次跑分的报告（run_eval.py 重新跑就有）
+#     ⚠️ 不要挡 eval/run_eval.py 和 eval/cases.jsonl —— 那俩是源文件，要进仓库
+logs/
+eval/report_*

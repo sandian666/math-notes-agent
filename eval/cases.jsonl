@@ -1,0 +1,30 @@
+{"id":"rag-01","cat":"rag","note":"Q1 函数判定（基础概念）","turns":[{"q":"判断一个关系是不是函数，关键看什么？","expect":{"tools":["search_notes"],"keywords_any":["唯一","对应"]}}]}
+{"id":"rag-02","cat":"rag","note":"Q2 导数为零不一定是极值（易错）","turns":[{"q":"为什么说导数为零的点不一定是极值点？举一个反例。","expect":{"tools":["search_notes"],"keywords_any":["极值"]}}]}
+{"id":"rag-03","cat":"rag","note":"Q3 闭区间最值为什么一定要算端点（易错）","turns":[{"q":"闭区间上求最值，为什么端点的函数值一定要算？","expect":{"tools":["search_notes"],"keywords_any":["端点"]}}]}
+{"id":"rag-04","cat":"rag","note":"Q4 诱导公式口诀（记忆型）","turns":[{"q":"诱导公式的口诀是什么？意思是什么？","expect":{"tools":["search_notes"],"keywords_any":["奇变偶不变","符号看象限"]}}]}
+{"id":"rag-05","cat":"rag","note":"Q5 正弦定理/余弦定理怎么选（方法选择）","turns":[{"q":"解三角形什么时候用正弦定理、什么时候用余弦定理？","expect":{"tools":["search_notes"],"keywords_any":["正弦","余弦"]}}]}
+{"id":"rag-06","cat":"rag","note":"Q6 等比数列最容易漏公比=1（易错）","turns":[{"q":"等比数列求和时最容易漏掉哪种情况？","expect":{"tools":["search_notes"],"keywords_any":["公比"]}}]}
+{"id":"rag-07","cat":"rag","note":"Q7 基本不等式要检查等号能不能取到（易错）","turns":[{"q":"用基本不等式求最值时，为什么要检查等号能不能取到？","expect":{"tools":["search_notes"],"keywords_any":["等号"]}}]}
+{"id":"rag-08","cat":"rag","note":"Q8 二面角三种做法（方法枚举）","turns":[{"q":"二面角的三种做法分别是什么？","expect":{"tools":["search_notes"],"keywords_any":["二面角"]}}]}
+{"id":"rag-09","cat":"rag","note":"Q9 椭圆与双曲线的 abc 关系（易记反）","turns":[{"q":"椭圆的 a、b、c 有什么关系？双曲线呢？这两个为什么会记反？","expect":{"tools":["search_notes"],"keywords_any":["椭圆"]}}]}
+{"id":"rag-10","cat":"rag","note":"Q10 样本方差分母为什么是 n-1（概念理解）","turns":[{"q":"样本方差的分母为什么是 n 减一？","expect":{"tools":["search_notes"],"keywords_any":["n-1","n减1","n 减一","n减一","无偏","自由度"]}}]}
+{"id":"cross-01","cat":"cross","note":"C1 跨 3 节：求最值（测 n_results=3 够不够召回）","turns":[{"q":"高中阶段有哪些地方用到求最值？各自的方法有什么不同？","expect":{"tools":["search_notes"],"keywords_any_pool":["导数","不等式","基本不等式","数列","二次函数"],"keywords_min":3}}]}
+{"id":"cross-02","cat":"cross","note":"C3 语义联想：不用原词，自己找该看哪几节","turns":[{"q":"我想复习怎么判断一个式子的正负，该看哪几节？","expect":{"tools":["search_notes"],"keywords_any_pool":["函数","不等式","导数"],"keywords_min":2}}]}
+{"id":"neg-01","cat":"negative","note":"N1 复数 i² 不在笔记里 → 必须拒答，不许编","turns":[{"q":"复数 i 的平方等于多少？","expect":{"refuse":true,"not_contains":["-1"]}}]}
+{"id":"neg-02","cat":"negative","note":"N2 中值定理超纲 → 必须拒答，不许编","turns":[{"q":"微积分里的中值定理讲了什么？","expect":{"refuse":true,"not_contains":["罗尔","拉格朗日"]}}]}
+{"id":"neg-03","cat":"negative","note":"N3 洛必达法则超纲 → 必须拒答，不许编","turns":[{"q":"洛必达法则怎么用？","expect":{"refuse":true,"not_contains":["求导后","分子分母"]}}]}
+{"id":"tool-01","cat":"tool","note":"天气：该调 get_weather","turns":[{"q":"北京今天天气怎么样？","expect":{"tools":["get_weather"],"keywords_any":["北京"]}}]}
+{"id":"tool-02","cat":"tool","note":"时间：该调 get_time（不设关键词，只看有没有调工具）","turns":[{"q":"现在几点了？","expect":{"tools":["get_time"]}}]}
+{"id":"tool-03","cat":"tool","note":"计算：该调 calculate","turns":[{"q":"12 乘以 8 等于几？","expect":{"tools":["calculate"],"keywords_any":["96"]}}]}
+{"id":"tool-04","cat":"tool","note":"除零：工具内部的错误要变成人话，不许崩","turns":[{"q":"帮我算 7 除以 0","expect":{"tools":["calculate"],"keywords_any":["除数","0"]}}]}
+{"id":"tool-05","cat":"tool","note":"天气第二例：看工具参数有没有传对城市","turns":[{"q":"上海现在的天气如何？","expect":{"tools":["get_weather"],"keywords_any":["上海"]}}]}
+{"id":"tool-06","cat":"tool","note":"⚠️负向：纯闲聊不该乱调工具（考过度调用；这条 FAIL 是发现了真问题，不是脚本坏了）","turns":[{"q":"你好，你是谁？","expect":{"forbid_tools":["search_notes","get_weather","get_time","calculate","save_note"]}}]}
+{"id":"tool-07","cat":"tool","note":"危险工具：save_note 必须先停车问人 → 评测机自动回 y","turns":[{"q":"把这句话存成笔记：每天进步一点","resume":"y","expect":{"tools":["save_note"],"interrupt":true,"keywords_soft":true,"keywords_any":["已保存","保存好","保存了","保存成功","存好","记下"],"file_contains":[{"path":"my_notes.txt","text":"每天进步一点"}]}}]}
+{"id":"tool-08","cat":"tool","note":"🔧故障注入：get_weather 换成睡 30s 的桩 + TOOL_TIMEOUT=1s → 单工具超时不拖垮整轮","inject":{"slow_tool":"get_weather","sleep_s":30,"timeout_s":1},"turns":[{"q":"北京今天天气怎么样？","expect":{"tools":["get_weather"],"keywords_any":["超时"]}}]}
+{"id":"tool-09","cat":"tool","note":"🔧故障注入：get_time 一调就抛 → 验证幂等重试（跑完会多等约 1.5s 退避）","inject":{"error_tool":"get_time","error":"RuntimeError"},"turns":[{"q":"现在几点了？","expect":{"tools":["get_time"],"retries_min":1,"keywords_any":["失败","出错","暂时"]}}]}
+{"id":"mt-01","cat":"multiturn","note":"两轮记忆：第二问必须接着上文答","turns":[{"q":"什么是函数？","expect":{"tools":["search_notes"]}},{"q":"那它的三要素是什么？","expect":{"keywords_any":["定义域","值域"]}}]}
+{"id":"mt-02","cat":"multiturn","note":"指代消解：第二问的『那』指椭圆","turns":[{"q":"椭圆里 a、b、c 是什么关系？","expect":{"tools":["search_notes"]}},{"q":"那双曲线呢？","expect":{"keywords_any":["双曲线"]}}]}
+{"id":"mt-03","cat":"multiturn","note":"🔴会话隔离：第二问换全新 session，必须答『不知道』，出现『小明』就是串味","turns":[{"q":"记住：我叫小明。","expect":{}},{"q":"我叫什么名字？","new_session":true,"expect":{"not_contains":["小明"]}}]}
+{"id":"mt-04","cat":"multiturn","note":"多轮+工具：第二问还得再调一次工具（换城市）","turns":[{"q":"北京今天天气怎么样？","expect":{"tools":["get_weather"]}},{"q":"那上海呢？","expect":{"tools":["get_weather"],"keywords_any":["上海"]}}]}
+{"id":"mt-05","cat":"multiturn","note":"跨轮引用上一轮结果（也可能自己心算，故不强制工具）","turns":[{"q":"12 乘以 8 等于几？","expect":{"keywords_any":["96"]}},{"q":"再加 5 呢？","expect":{"keywords_any":["101"]}}]}
+{"id":"mt-06","cat":"multiturn","note":"多轮中触发人工确认（在第二问）","turns":[{"q":"你好，你是谁？","expect":{"forbid_tools":["save_note"]}},{"q":"把复习不等式记成笔记","resume":"y","expect":{"tools":["save_note"],"keywords_soft":true,"keywords_any":["已保存","保存好","保存了","保存成功","存好","记下"],"file_contains":[{"path":"my_notes.txt","text":"复习不等式"}]}}]}

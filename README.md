@@ -1,9 +1,9 @@
 # 高中数学笔记 Agent（math-notes-agent）
 
 把本地高中数学笔记做成知识库，用一个**能自己决定"要不要查资料 / 要不要调工具"**的 Agent 来回答，网页 SSE 流式输出。
-个人学习项目，重点练四件事：**RAG 检索** · **多工具 Agent 循环** · **全链路异步 + 容器化** · **成本控制**。
+个人学习项目，重点练五件事：**RAG 检索** · **多工具 Agent 循环** · **全链路异步 + 容器化** · **成本控制** · **生产化（会话持久化 / 工具健壮性 / 评测与可观测）**。
 
-技术栈一路演进到了：FastAPI + SSE 流式 → MySQL 额度闸 → **Docker Compose 编排** → **全链路异步**（`AsyncOpenAI` + `aiomysql`）→ **LangGraph 编排 Agent** → **MCP 可插拔工具**。
+技术栈一路演进到了：FastAPI + SSE 流式 → MySQL 额度闸 → **Docker Compose 编排** → **全链路异步**（`AsyncOpenAI` + `aiomysql`）→ **LangGraph 编排 Agent** → **MCP 可插拔工具** → **官方 Checkpointer 会话持久化** → **评测跑分器 + 结构化日志**。
 
 ---
 
@@ -11,10 +11,12 @@
 
 1. **高中数学知识问答**：检索本地笔记片段后作答，并**标明出处**（RAG）
 2. **工具调用**：查天气（wttr.in）、当前时间、四则运算，以及一组**由 MCP server 提供**的字符串工具
-3. **会话级多轮**：同一个 `session_id` 记得上文
+3. **会话级多轮 + 持久化**：同一个 `session_id` 记得上文，对话状态落在 SQLite（`sessions_lc.db`），**服务重启也不丢**
 4. **SSE 流式**：答案边生成边显示
 5. **成本控制**：内存缓存（同问秒回、不记账）+ **每日额度闸落 MySQL**（重启不丢）
 6. **入口口令闸**：cookie / 网址 `?k=` / Basic Auth 三种进法
+7. **工具健壮性**：单工具 15s / 整轮 120s 超时；**只有幂等工具**才自动退避重试；写操作（`save_note`）执行前**停下来问人**（y/n）
+8. **评测与可观测**：`obs.py` 把每轮问答落成一行 JSON（token / 工具 / 延迟 / 重试），`eval/` 跑用例集出报告、并能和上一轮对比"变好还是变差"
 
 ---
 
@@ -37,18 +39,26 @@
         ▼                    ▼
   MySQL（额度/日志）    MCP server（独立进程，stdio）
   aiomysql 异步连接池     mcp_server.py
+        │
+        ▼
+  SQLite（会话存档）＋ logs/run.jsonl（结构化日志）
+  sessions_lc.db（官方 Checkpointer）／ obs.py
 ```
 
 | 文件 | 作用 |
 |---|---|
 | `main.py` | FastAPI 服务：路由 + 入口口令中间件 + **lifespan**（启动时连 MCP server 并并入工具表） |
-| `agent.py` | Agent 主体：`LangGraph` 图（model 节点 / tools 节点 / 条件边 / 环）、4 个本地工具、缓存、会话记忆、额度闸调用 |
+| `agent.py` | Agent 主体：`LangGraph` 图（model 节点 / tools 节点 / 条件边 / 环）、4 个本地工具、缓存、会话记忆、额度闸调用；**工具超时/重试/人工确认** + **Pydantic 结构化输出** |
 | `mcp_server.py` | **独立进程**的 MCP server（`reverse_text` / `char_count` / `now`） |
 | `mcp_bridge.py` | MCP → LangChain 工具的桥：JSON Schema → pydantic 模型；会话生命周期 |
 | `quota_db.py` | 额度账本：`aiomysql` 异步连接池，读写 `daily_quota` / `qa_log` |
+| `obs.py` | 结构化日志：每轮问答追加一行 JSON 到 `logs/run.jsonl`，并提供汇总（延迟 / token / 工具分布 / 重试） |
 | `index.html` | 提问页面：原生 JS + `EventSource`，`session_id` 存 localStorage |
 | `init_db.py` / `create_db.py` | 一次性建表 / 建向量库脚本 |
-| `Dockerfile` / `docker-compose.yml` | 容器化编排（app + MySQL） |
+| `eval/run_eval.py` / `eval/cases.jsonl` | 评测跑分器 + 用例集：规则判分、故障注入（慢桩/报错桩）、两轮对比 |
+| `eval.cmd` | 评测入口：自动用项目 `.venv` 的 python，不用手动激活 |
+| `Dockerfile` / `docker-compose.yml` | 容器化编排（app + MySQL；容器启动时自动跑 `init_db.py`） |
+| `probe_*.py` | 零成本探针：验证工具重试 / 结构化输出 / 会话存档，不烧额度 |
 
 ---
 
@@ -80,18 +90,15 @@ setx S6_DB_PASSWORD "你的MySQL密码"
 # 1) 起容器（首次会 build 镜像）
 docker compose up -d --build
 
-# 2) 首次运行要建表 + 建向量库（进容器里跑）
-docker compose exec app python init_db.py
-docker compose exec app python create_db.py
-
-# 3) 打开页面（口令就是你的 S5_PASSWORD）
+# 2) 打开页面（口令就是你的 S5_PASSWORD）
 #    http://127.0.0.1:8000/?k=<S5_PASSWORD>
 ```
 
-> ⚠️ **关于数据卷**：`docker-compose.yml` 里 MySQL 用的是**外部命名卷**（`external: true` + 固定 `name`），意味着容器删了数据还在。
-> 换台机器/别人克隆后**没有这个卷**，会起不来 —— 两种做法任选：
-> - 先建卷：`docker volume create <compose 里那个 name>`
-> - 或者把 `external: true` / `name:` 两行删掉，让 compose 自己建新卷（**空库，需要跑 `init_db.py`**）
+容器启动时会**自动**先跑一遍 `init_db.py`（建库建表，幂等），**不用**再手动进容器执行；
+向量库 `chroma_db` 已经打进镜像（`.dockerignore` 里放行），所以**也不需要**跑 `create_db.py`。
+
+> **关于数据卷**：MySQL 用 compose 自己管理的命名卷（`mysql_data`）。`docker compose down` 只删容器不删卷，数据还在；`down -v` 才是真删。
+> 换台机器 / 别人克隆后 compose 会**自己建**这个卷（空库），首次启动由 CMD 里的 `init_db.py` 建表 —— **不需要手动 `docker volume create`**。
 
 ### 方式 B：本机直接跑（不用 Docker）
 
@@ -125,7 +132,7 @@ python main.py
 
 | 类别 | 用了什么 |
 |---|---|
-| 语言 / 运行时 | Python 3.13（镜像 `python:3.13-slim`） |
+| 语言 / 运行时 | Python 3.14（镜像 `python:3.14-slim`，与开发机一致） |
 | Web | FastAPI + Uvicorn（ASGI） |
 | Agent 编排 | **LangGraph**（State + reducer + 条件边 + 环） |
 | 工具协议 | **MCP**（官方 `mcp` SDK，stdio 传输，工具跑在独立进程） |
@@ -133,6 +140,8 @@ python main.py
 | 模型 | 聊天 `deepseek-flash`（DeepSeek 官方）；向量 `embedding-3`（智谱） |
 | 向量库 | ChromaDB（PersistentClient，cosine） |
 | 数据库 | MySQL 8 + **`aiomysql` 异步连接池** |
+| 会话持久化 | LangGraph **官方 Checkpointer**（`langgraph-checkpoint-sqlite` → `AsyncSqliteSaver`，存 `sessions_lc.db`） |
+| 评测 / 可观测 | 自写 `eval/`（规则判分 + 故障注入）+ `obs.py`（一行一 JSON 的结构化日志） |
 | 前端 | 原生 HTML + JS（`EventSource`），无框架 |
 | 部署 | Dockerfile + docker compose（app + MySQL 两服务） |
 
@@ -196,6 +205,41 @@ python main.py
 切片粒度：500 字硬切（相似度 0.4175）→ 按段落切（~130 字）**0.5996**。结论：**切太长会语义稀释**，段落切片更优。
 system 提示词要求"基于给定材料回答 + 必须标明出处" → 抑制幻觉、答案可追溯。
 
+### 8. 会话持久化：官方 Checkpointer 换掉手写存档
+
+`thread_id = session_id`，每次图跑完的状态存进 `sessions_lc.db`（`AsyncSqliteSaver`）：
+
+- **重启不丢**：进程重启后同一个 `session_id` 接着聊，上文还在；
+- 🔴 **懒加载**：模块导入时还没有事件循环，`AsyncSqliteSaver` 构造会直接报错 → 等**第一次真的要跑图**时才连库 + 装配；
+- 🔴 **SystemMessage 每轮现拼、不入库**：状态现在会被永久存下来，每轮都塞一条 system 就会在库里越攒越多 → 只把历史里非 system 的消息拿出来，前面补一份新的；
+- **代价**：多一个 `.db` 文件要管（已进 `.gitignore`）、存档格式跟着库版本走。
+
+### 9. 工具健壮性：超时 / 幂等重试 / 危险工具人工确认
+
+- **两层超时**：单工具 15s（`TOOL_TIMEOUT`）、一整轮 120s（`RUN_TIMEOUT`）；
+- 🔴 **超时 ≠ 异常**：超时通常是"对方挂了"，重试只是再干等一遍 → **超时直接放弃**；其他异常才退避重试（0.5s → 1.0s）。单独定一个 `ToolTimeout` 异常类型，就是为了把这两条路分开；
+- 🔴 **只有幂等工具才敢重试**：幂等 = 做 1 次和做 N 次结果一样（`search_notes` / `get_weather` / `get_time` / `calculate`）；写操作不幂等，重试可能做两次 → 只试 1 次；
+- **危险工具人工确认**：`save_note` 这类写操作走 LangGraph 的 `interrupt()` 把图**停在半路**，回 `y` 才继续、回 `n` 就把"用户拒绝"当一条工具结果喂回模型（恢复用 `Command(resume=...)`）；
+- 工具**任何情况都返回字符串、绝不抛** → 异常变成"一条工具结果"喂回模型，它自己改道，整轮不崩。
+
+### 10. 结构化输出：Pydantic 校验 + 把报错原文喂回去
+
+`NoteAnswer`（`answer` / `sources` / `enough_info` / `confidence`）用 `with_structured_output(..., include_raw=True, method="json_mode")`，拿到 `parsed` / `parsing_error`：
+
+- 不合格时**把 pydantic 的报错原文 + 模型上一次的错误输出一起塞回去**重问，最多 2 次 —— 不告诉它错在哪，重试只是重复犯同一个错；
+- 🔴 **调用失败 ≠ 格式不合格**：网络 / 额度报错不重试（跟"超时 ≠ 异常"同一个思路），只有格式问题才重试；
+- 目前这条能力只在**探针 `probe_struct.py`** 里验证过，**还没接进 `/ask` 主链路**（见下面"已知限制"）。
+
+### 11. 评测与可观测：让"变好还是变差"有数
+
+- **观测**：`obs.py` 每轮问答追加一行 JSON 到 `logs/run.jsonl`（`cache_hit` / `usage` / `tools` / `retries` / `timeout` / `interrupt` / `latency_ms`）。
+  🔴 两个故意的设计：`log_event()` 把异常**全吞掉**（日志是配角，绝不许影响一次正常问答）；本文件**不 import agent**（谁都能 import，不会绕成循环导入）。
+- 🔴 **只统计"本轮新增"的消息**：图返回的是**整段历史**，直接对全部 `messages` 求和会把前几轮的 token 重复计入 —— 有记忆的系统里，"看起来对"的统计最容易骗人（`_summarize_run` 先记 `n_before` 再切掉旧消息）；
+- **评测**：`eval.cmd` 一条命令出一份报告，规则判分（工具断言 / 关键词 / 拒答口径）**零成本、可复现**，不上 LLM 评委；
+- 🔴 **测试铁律：每条用例一个全新 `session_id`** —— 复用 session 会把上一题的工具结果留在历史里，模型直接照抄、根本不调工具（踩过）；
+- **故障注入**：把某个工具临时换成"慢桩 / 报错桩"，让"超时 / 重试"变成**可复现**的实验，而不是等哪天网络自己挂掉；
+- `--tag` 给这轮起名、`--compare` 和上一轮比"变好还是变差"、`--stats` 不出模型只看日志汇总（**不花钱**）。
+
 ---
 
 ## 已知限制 / 下一步
@@ -203,12 +247,15 @@ system 提示词要求"基于给定材料回答 + 必须标明出处" → 抑制
 - 单知识库、单资料文件；`DAILY_LIMIT` 仍写死在 `quota_db.py`
 - 缓存不持久（重启清空）、无失效机制
 - `S5_PASSWORD` 不设置时入口**完全不拦**（fail open）
-- 日志还是 `print`，没换成 `logging`
+- `print` 和 `obs.py` 并存，还没统一到 `logging`
 - MCP server 是子进程，**没有崩溃重启**机制
-- 公网部署版本落后于本仓库（本仓库是最新版）
+- **结构化输出还没接进 `/ask`**：只在探针里验证过
+- `thread_info` / `session_store.py` 是早期自研的存档写法，**已被官方 Checkpointer 取代，现在是死代码**（待删）
+- 观测只在**本机文件**里（`logs/run.jsonl`），没有集中式观测（未接 LangSmith / OTel）
 
 ---
 
 ## 部署
 
-已部署到云服务器（Ubuntu + `systemd` 常驻自启 + 入口口令闸）。公网演示地址与口令不放在本仓库里。
+已部署到云服务器（Ubuntu + `systemd` 常驻自启 + 入口口令闸）。**公网 systemd 那个服务跑的就是本仓库当前版本**（2026-10-15 已同步代码与依赖）。
+公网演示地址与口令不放在本仓库里。

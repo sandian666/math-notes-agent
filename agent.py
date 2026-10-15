@@ -1,5 +1,5 @@
 # ===== S5 / agent.py =====
-import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite
+import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs
 from openai import OpenAI
 from typing import Annotated, Literal, TypedDict
 from pydantic import BaseModel, Field
@@ -22,6 +22,9 @@ with open(COLLECTION_FILE,encoding="utf-8") as f:
     COLLECTION_NAME=f.read().strip()
 
 _answer_cache = {}
+
+# 本轮里发生过的"重试 / 超时"记录（结构化日志与评测要用；graph_answer 每轮开头清空）
+RETRY_LOG = []
 
 # ================= client（改造 B） =================
 embed_client = OpenAI(api_key=os.environ.get("ZHIPU_API_KEY"),
@@ -71,7 +74,8 @@ def get_time() -> str:
 
 
 def calculate(a: int, b: int, op: Literal["+", "-", "*", "/"]) -> str:
-    """对两个整数执行四则运算。op 只能是 + - * / 之一。"""
+    """对两个整数执行四则运算。op 只能是 + - * / 之一。
+    除数为 0、运算符不支持这类"算不出来"的情况也照常调用，工具会返回错误文本，由你转述给用户。"""
     a = int(a)
     b = int(b)
     if op == "+":
@@ -98,7 +102,11 @@ def save_note(note: str) -> str:
 # ================= LangGraph 版 Agent 图 =================
 SYSTEM_PROMPT = """你是一个严谨的老师，用户询问关于高中数学有关的知识时，
 你要根据文本检索相关内容并标明出处回答，若该知识文本没有请回复没有检索到相关内容。
-用户询问天气、时间或需要计算时，调用相应的工具。用户要求把某句话存成笔记时，调用 save_note。"""
+用户询问天气、时间时，调用相应的工具。
+凡涉及具体数字的运算，无论算式多简单、也无论你觉得这个算式是否合法，都必须先调用 calculate，
+再依据工具返回的内容作答；工具返回的是错误时，把这条错误转成用户能听懂的话（例如说明"除数不能为 0"），
+不要自己另算一遍，也不要绕过工具直接凭知识回答。
+用户要求把某句话存成笔记时，调用 save_note。"""
 
 # 把 4 个原始函数"包装成"模型能选用的工具（用 docstring 当描述、类型标注当参数表）
 LC_TOOLS = [tool(search_notes), tool(get_weather), tool(get_time), tool(calculate), tool(save_note)]
@@ -174,8 +182,10 @@ async def _run_with_retry(name: str, args: dict) -> str:
         except ToolTimeout as e:
             # 🔴 超时通常是"对方挂了"，重试只是再干等一遍 → 直接放弃
             print(f"⏰ [重试] {name} 超时 → 不重试（超时≠异常）")
+            RETRY_LOG.append({"tool": name, "attempt": i, "error": "ToolTimeout"})
             return f"工具超时：{e}，请换关键词或直接告诉用户稍后再试"
         except Exception as e:   # 捕获其他普通异常。
+            RETRY_LOG.append({"tool": name, "attempt": i, "error": type(e).__name__})
             if i < tries:
                 wait = RETRY_BACKOFF * i   # 退避方式计算等待重试时间
                 print(f"🔁 [重试] {name} 第 {i} 次失败（{type(e).__name__}: {e}）→ {wait}s 后再试")
@@ -261,27 +271,82 @@ async def thread_info(session_id):  # 只是查看历史，没有新回答
     return len(msgs)
 
 
-async def graph_answer(session_id, question=None, resume=None):
+def _summarize_run(msgs):
+    """从【本轮新增】的那几条消息里摘统计：token 用量 + 调了哪些工具 + 重试记录。
+
+    🔴 传进来的必须是"本轮新增"的消息：图 ainvoke 返回的是【整段历史】，
+       直接对着全部 messages 求和，会把前几轮的 token 重复计进去 ——
+       有记忆的系统里，"看起来对"的统计最容易骗人。
+    """
+    usage = {"input": 0, "output": 0, "total": 0}
+    tools = []
+    for m in msgs:
+        u = getattr(m, "usage_metadata", None)
+        if not u:      # 兜底：有些版本/服务商只给 response_metadata.token_usage
+            raw = (getattr(m, "response_metadata", None) or {}).get("token_usage") or {}
+            u = {"input_tokens": raw.get("prompt_tokens", 0),  # 把备用格式转换成统一格式。
+                 "output_tokens": raw.get("completion_tokens", 0),
+                 "total_tokens": raw.get("total_tokens", 0)}
+        usage["input"] += u.get("input_tokens") or 0
+        usage["output"] += u.get("output_tokens") or 0
+        usage["total"] += u.get("total_tokens") or 0
+        for tc in (getattr(m, "tool_calls", None) or []):  # 统计工具调用次数和顺序
+            tools.append(tc["name"])
+    return {
+        "usage": usage,
+        "tools": tools,
+        "n_tool_calls": len(tools),
+        "retries": list(RETRY_LOG),
+    }
+
+
+async def graph_answer(session_id, question=None, resume=None, *, with_meta=False):
     """question = 新问题；resume = 人工确认的答复（y/n）。两者二选一。"""
     graph = await _get_graph()   # 执行函数后，graph是已经连接 SQLite 记忆功能的 LangGraph
     # 创建本次运行的配置，🔴 thread_id = 我们的 session_id，checkpointer 靠它区分"谁的历史"
     cfg = {"configurable": {"thread_id": session_id}}
+    # 🔴 先数一下"动手前已有几条消息"：图返回的是【整段历史】，
+    #    不减掉旧消息，token 统计就会把前几轮重复计入。
+    snap = await graph.aget_state(cfg)
+    n_before = len(snap.values.get("messages", []))
+    RETRY_LOG.clear()            # 本轮的重试记录从零开始数
     payload = Command(resume=resume) if resume is not None else {"messages": [HumanMessage(question)]}
+    t0 = time.monotonic()
     # 有 resume：恢复之前被 interrupt() 暂停的图，并把resume作为人工确认结果传回去；没有 resume：这是一个新问题，把它作为新消息交给图。
-    try:  # 超时不当异常抛，而是当"一条工具结果"喂回模型 → 模型自己改道
+    try:  # 整轮超时 → 不再继续图 → 直接返回超时文本
         out = await asyncio.wait_for(graph.ainvoke(payload, config=cfg), timeout=RUN_TIMEOUT)
     except asyncio.TimeoutError:
-        return f"抱歉，这一轮超过 {RUN_TIMEOUT} 秒还没算完，请把问题拆小一点再问我。"
+        text = f"抱歉，这一轮超过 {RUN_TIMEOUT} 秒还没算完，请把问题拆小一点再问我。"
+        meta = {"usage": {"input": 0, "output": 0, "total": 0}, "tools": [], "n_tool_calls": 0,
+                "retries": list(RETRY_LOG), "timeout": True, "interrupt": False,
+                "latency_ms": round((time.monotonic() - t0) * 1000)}   # 构造超时情况下的元数据
+        obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
+                      text=text, cache_hit=False, **meta)  # 记录一条观测日志
+        return (text, meta) if with_meta else text
     # 🔴 图"停在半路等人"时，返回的字典里会多一个 __interrupt__ 键
+    meta = _summarize_run(out["messages"][n_before:])   # ← 只统计【本轮新增】的那几条
+    meta["timeout"] = False
+    meta["latency_ms"] = round((time.monotonic() - t0) * 1000)
     pending = out.get("__interrupt__")
     if pending:  # 有值说明图停在了人工点
-        return "【等待人工确认】" + pending[0].value["ask"]
-    return out["messages"][-1].content
+        meta["interrupt"] = True
+        text = "【等待人工确认】" + pending[0].value["ask"]
+    else:
+        meta["interrupt"] = False
+        text = out["messages"][-1].content
+    return_text = (text, meta) if with_meta else text
+    obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
+                  text=text, cache_hit=False, **meta)  # cache_hit=False表示这次确实运行了图，不是从缓存直接返回
+    return return_text
 
 
 async def answer_cached(session_id, question):
     cache_key = (session_id, question)
     if cache_key in _answer_cache:                        # ① 答过的题白送、不记账
+        obs.log_event(kind="answer", session_id=session_id, question=question,
+                      text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
+                      usage={"input": 0, "output": 0, "total": 0}, tools=[],
+                      n_tool_calls=0, retries=[], timeout=False, interrupt=False)
         return _answer_cache[cache_key]
     if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
         return "今天额度已用完，明天再来吧"
@@ -295,6 +360,10 @@ async def stream_answer(session_id, question):
     """图版流式：把 while True 换成 agent_graph.astream"""
     cache_key = (session_id, question)
     if cache_key in _answer_cache:                       # ① 白送
+        obs.log_event(kind="answer", session_id=session_id, question=question,
+                      text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
+                      usage={"input": 0, "output": 0, "total": 0}, tools=[],
+                      n_tool_calls=0, retries=[], timeout=False, interrupt=False)
         yield f"data: {_answer_cache[cache_key]}\n\n"
         return
     if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ② 拦

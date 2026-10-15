@@ -23,8 +23,6 @@ services:
         condition: service_healthy          # 等 db「真能应答」再启动 app
     ports:
       - "8000:8000"                         # 宿主机端口:容器端口
-    volumes:
-      - ./chroma_db:/app/chroma_db          #这是本地目录和容器目录之间的映射：
     environment:
       - S5_USER=demo
       - S5_PASSWORD     # 不写等号 =从启动 Docker Compose 的宿主机环境变量中读取同名变量，再传给容器。
@@ -35,6 +33,4 @@ services:
 
 volumes:
   mysql_data:
-    external: true
-    name: fa24545f100bbb1085733c07e22a30691bf96ee0a0cd8b3588300247548b8d9b
   
