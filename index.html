@@ -1,41 +1,1117 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN" data-theme="auto">
 <head>
-    <meta charset="utf-8">
-    <title>S5 数学笔记问答</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>数学笔记助手 · 高中数学笔记问答</title>
+
+<!--
+  ===== 分层交付 =====
+  🔴 必须会（要能自己重写）：
+     1) session_id 存取 —— localStorage 当储物柜，刷新/换话题都认得你。原则：HTTP 无状态，身份得前端自己带着。
+     2) 流式读取 —— fetch 拿 ReadableStream，边到边解析 SSE 帧（data: xxx\n\n），边拼边画。
+     3) 不用 EventSource 的原因 —— 它断线会自己重连，服务端流一结束就重发，答案会重复；fetch + AbortController 由我们说了算。
+  🟡 看得懂会改：迷你 Markdown 渲染、主题三态、历史对话存 localStorage。
+  ⚪ 交给 AI：CSS 视觉层（配色 / 层次 / 圆角 / 阴影 / 动画）。
+
+  ⚠️ 界面文案原则（2026-10-16 定）：界面上不出现任何"只有作者看得懂"的东西 ——
+     不出现项目代号、不出现技术名词（RAG / 向量库 / SSE / 模型名）、
+     不出现提示词原文、不主动暴露"做不到什么"。用户只需要知道：问什么、怎么问、能做什么。
+-->
+
+<style>
+/* =========================================================
+   1. 设计令牌：颜色是"分角色"的 —— 每个模块一个色，界面才不单调
+   ========================================================= */
+:root{
+  --bg:#eef1f9; --text:#0f172a; --text-soft:#45526b; --muted:#7b88a3;
+  --panel:rgba(255,255,255,.72); --card:#ffffff; --line:rgba(15,23,42,.10);
+  --scrim:rgba(255,255,255,.60);
+  --accent:#4f46e5; --accent-2:#0ea5e9; --accent-soft:rgba(79,70,229,.10);
+  --c-indigo:#6366f1; --ci-soft:rgba(99,102,241,.13);
+  --c-cyan:#0891b2;   --cc-soft:rgba(8,145,178,.13);
+  --c-amber:#d97706;  --ca-soft:rgba(217,119,6,.15);
+  --c-rose:#e11d48;   --cr-soft:rgba(225,29,72,.12);
+  --c-emerald:#059669;--ce-soft:rgba(5,150,105,.13);
+  --e1:0 2px 6px -3px rgba(15,23,42,.18);
+  --e2:0 12px 26px -18px rgba(15,23,42,.42);
+  --e3:0 30px 70px -32px rgba(15,23,42,.45);
+  --r-s:11px; --r-m:16px; --r-l:22px; --r-xl:28px;
+  --ok:#10b981; --warn:#f59e0b;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Consolas,"Courier New",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+html[data-theme="dark"]{
+  --bg:#070b16; --text:#e9efff; --text-soft:#b7c3e2; --muted:#8593b6;
+  --panel:rgba(243,246,255,.045); --card:#141c33; --line:rgba(255,255,255,.10);
+  --scrim:rgba(4,7,16,.55);
+  --accent:#6366f1; --accent-2:#22d3ee; --accent-soft:rgba(99,102,241,.18);
+  --c-indigo:#818cf8; --ci-soft:rgba(129,140,248,.16);
+  --c-cyan:#22d3ee;   --cc-soft:rgba(34,211,238,.14);
+  --c-amber:#fbbf24;  --ca-soft:rgba(251,191,36,.15);
+  --c-rose:#fb7185;   --cr-soft:rgba(251,113,133,.15);
+  --c-emerald:#34d399;--ce-soft:rgba(52,211,153,.14);
+  --e1:0 2px 8px -4px rgba(0,0,0,.7);
+  --e2:0 14px 30px -20px rgba(0,0,0,.9);
+  --e3:0 34px 80px -34px rgba(0,0,0,.95);
+}
+@media (prefers-color-scheme: dark){
+  html[data-theme="auto"]{
+    --bg:#070b16; --text:#e9efff; --text-soft:#b7c3e2; --muted:#8593b6;
+    --panel:rgba(243,246,255,.045); --card:#141c33; --line:rgba(255,255,255,.10);
+    --scrim:rgba(4,7,16,.55);
+    --accent:#6366f1; --accent-2:#22d3ee; --accent-soft:rgba(99,102,241,.18);
+    --c-indigo:#818cf8; --ci-soft:rgba(129,140,248,.16);
+    --c-cyan:#22d3ee;   --cc-soft:rgba(34,211,238,.14);
+    --c-amber:#fbbf24;  --ca-soft:rgba(251,191,36,.15);
+    --c-rose:#fb7185;   --cr-soft:rgba(251,113,133,.15);
+    --c-emerald:#34d399;--ce-soft:rgba(52,211,153,.14);
+    --e1:0 2px 8px -4px rgba(0,0,0,.7);
+    --e2:0 14px 30px -20px rgba(0,0,0,.9);
+    --e3:0 34px 80px -34px rgba(0,0,0,.95);
+  }
+}
+
+/* =========================================================
+   2. 背景：五层叠出来的"流动感"，全部纯 CSS + 一个内联噪点图
+      ① 色气 mesh 游动  ② 锥形光扫旋转  ③ 斜向流带漂移
+      ④ 亮度罩（压住背景保可读）  ⑤ 颗粒纹理（质感）
+      零外部请求 → 断网 / 容器里都不会白屏，首屏也不用等图
+   ========================================================= */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:var(--sans); color:var(--text); background:var(--bg);
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+.bg{position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden}
+.mesh{
+  position:absolute; inset:-25%;
+  background:
+    radial-gradient(38% 34% at 18% 22%, rgba(99,102,241,.58), transparent 62%),
+    radial-gradient(34% 30% at 84% 16%, rgba(14,165,233,.50), transparent 62%),
+    radial-gradient(36% 34% at 74% 82%, rgba(168,85,247,.44), transparent 62%),
+    radial-gradient(30% 28% at 22% 84%, rgba(16,185,129,.34), transparent 62%),
+    radial-gradient(26% 24% at 52% 46%, rgba(244,114,182,.24), transparent 62%);
+  filter:blur(66px); animation:drift 30s ease-in-out infinite alternate; will-change:transform;
+}
+.sheen{
+  position:absolute; left:50%; top:50%; width:148vmax; height:148vmax; margin:-74vmax 0 0 -74vmax;
+  background:conic-gradient(from 0deg,
+    transparent 0 12%, rgba(255,255,255,.075) 18%, transparent 25%,
+    rgba(255,255,255,.05) 44%, transparent 52%,
+    rgba(255,255,255,.065) 72%, transparent 80%);
+  animation:spin 88s linear infinite; will-change:transform;
+}
+.stream{
+  position:absolute; inset:-10% -30%; mix-blend-mode:soft-light;
+  background:linear-gradient(112deg,
+    transparent 30%, rgba(255,255,255,.12) 43%, transparent 52%,
+    transparent 63%, rgba(255,255,255,.09) 73%, transparent 82%);
+  background-size:260% 100%; animation:stream 26s linear infinite;
+}
+.scrim{position:absolute; inset:0; background:radial-gradient(125% 88% at 50% 0%, var(--scrim), transparent 64%)}
+.grain{
+  position:absolute; inset:0; opacity:.42; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.4'/%3E%3C/svg%3E");
+}
+@keyframes drift{
+  0%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(3vw,-2.6vw,0) scale(1.09)}
+  100%{transform:translate3d(-2vw,2vw,0) scale(1.05)}
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes stream{from{background-position:0% 0}to{background-position:260% 0}}
+
+.app{position:relative; z-index:1; height:100%; display:grid; grid-template-columns:296px 1fr}
+
+/* =========================================================
+   3. 左栏
+   ========================================================= */
+.sidebar{
+  display:flex; flex-direction:column; gap:13px; padding:16px 13px 13px;
+  background:var(--panel); backdrop-filter:blur(20px);
+  border-right:1px solid var(--line); overflow-y:auto;
+}
+
+/* ① 品牌区：渐变横幅，左栏的"眼睛" */
+.brand{
+  position:relative; overflow:hidden; border-radius:var(--r-l); padding:16px 15px; color:#fff;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed 45%,#0891b2); box-shadow:var(--e2);
+}
+.brand::after{
+  content:""; position:absolute; top:-40%; right:-30%; width:70%; height:180%;
+  background:linear-gradient(90deg,rgba(255,255,255,.22),transparent); transform:rotate(18deg);
+}
+.brand-row{display:flex; align-items:center; gap:11px; position:relative}
+.mark{
+  width:42px; height:42px; flex:0 0 42px; border-radius:14px; display:grid; place-items:center;
+  font-weight:600; font-size:21px; line-height:1;
+  background:rgba(255,255,255,.20); border:1px solid rgba(255,255,255,.34);
+}
+.brand h1{margin:0; font-size:15.5px; letter-spacing:.2px}
+.brand p{margin:3px 0 0; font-size:11.5px; opacity:.86}
+
+/* ② 两个数字方块 */
+.tiles{display:grid; grid-template-columns:1fr 1fr; gap:9px}
+.tile{
+  position:relative; overflow:hidden; border:1px solid var(--line); border-radius:var(--r-m);
+  padding:11px 12px; box-shadow:var(--e1);
+  background:linear-gradient(150deg,var(--tint),transparent 70%), var(--card);
+}
+.tile b{
+  display:block; font-size:22px; line-height:1.15; letter-spacing:-.6px;
+  background:linear-gradient(135deg,var(--tone),var(--accent-2));
+  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+}
+.tile span{font-size:11px; color:var(--muted)}
+.tile::before{content:""; position:absolute; left:0; top:14%; bottom:14%; width:3px; border-radius:0 3px 3px 0; background:var(--tone)}
+.t-indigo{--tone:var(--c-indigo); --tint:var(--ci-soft)}
+.t-emerald{--tone:var(--c-emerald); --tint:var(--ce-soft)}
+
+/* 通用卡片；--tone / --tint 是"模块身份证" */
+.card{
+  position:relative; border:1px solid var(--line); border-radius:var(--r-l); padding:13px; background:var(--card);
+  box-shadow:var(--e1); transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  overflow:hidden;
+}
+.card::after{
+  content:""; position:absolute; left:12%; right:12%; top:0; height:1.5px; border-radius:2px;
+  background:linear-gradient(90deg,transparent,var(--tone),transparent); opacity:.55; transition:opacity .2s ease;
+}
+.card:hover{transform:translateY(-2px); box-shadow:var(--e2); border-color:var(--tone)}
+.card:hover::after{opacity:1}
+.card.lift{background:linear-gradient(170deg,var(--tint),transparent 58%), var(--card)}
+.c-indigo{--tone:var(--c-indigo); --tint:var(--ci-soft)}
+.c-cyan{--tone:var(--c-cyan); --tint:var(--cc-soft)}
+.c-amber{--tone:var(--c-amber); --tint:var(--ca-soft)}
+.c-rose{--tone:var(--c-rose); --tint:var(--cr-soft)}
+.c-emerald{--tone:var(--c-emerald); --tint:var(--ce-soft)}
+
+/* 模块小标题 */
+.sec{display:flex; align-items:center; gap:8px; margin:0 0 10px}
+.sec .ico{
+  width:23px; height:23px; flex:0 0 23px; border-radius:8px; display:grid; place-items:center;
+  font-size:12px; background:var(--tint); border:1px solid var(--line); color:var(--tone);
+}
+.sec h2{margin:0; font-size:12.5px; font-weight:700; letter-spacing:.3px; color:var(--text)}
+.sec .n{margin-left:auto; font-size:10.5px; color:var(--muted); font-family:var(--mono)}
+
+/* 编辑式小标签：一道细线 + 一行小字，比"出处·二、导数"自然得多 */
+.eyebrow{
+  display:inline-flex; align-items:center; gap:8px; font-style:normal;
+  font-size:11px; letter-spacing:.12em; color:var(--muted);
+}
+.eyebrow::before{content:""; width:14px; height:1px; background:currentColor; opacity:.5}
+
+/* 学科符号方块：用数学符号做图标，比 emoji 更像"产品" */
+.glyph{
+  width:27px; height:27px; flex:0 0 27px; border-radius:9px; display:grid; place-items:center;
+  font-size:13.5px; font-weight:600; line-height:1; background:var(--tint); color:var(--tone);
+  border:1px solid var(--line);
+}
+
+/* 按钮 */
+.btn{
+  font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--text);
+  border-radius:var(--r-s); padding:8px 11px; font-size:12.5px; transition:.18s;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px; box-shadow:var(--e1);
+}
+.btn:hover{border-color:var(--tone, var(--accent)); color:var(--tone, var(--accent)); background:var(--tint, var(--accent-soft)); transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn.bare{border-color:transparent; background:transparent; box-shadow:none}
+.btn.bare:hover{background:var(--tint); color:var(--tone)}
+.btn:disabled{opacity:.45; cursor:not-allowed; transform:none}
+.row-btns{display:flex; gap:7px; margin-top:11px}
+.row-btns .btn{flex:1}
+
+/* 连接状态 + 对话编号 */
+.sess{display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--text-soft)}
+.dot{width:9px; height:9px; flex:0 0 9px; border-radius:50%; background:var(--muted)}
+.dot.on{background:var(--ok); box-shadow:0 0 0 4px rgba(16,185,129,.18); animation:pulse 2.4s ease-out infinite}
+.dot.off{background:var(--warn); box-shadow:0 0 0 4px rgba(245,158,11,.18)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.45)}70%{box-shadow:0 0 0 8px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+.field{margin-top:11px}
+.field label{display:block; font-size:10.5px; letter-spacing:.1em; color:var(--muted); margin-bottom:5px}
+.sid{
+  font-family:var(--mono); font-size:11px; color:var(--text-soft); background:var(--tint);
+  border:1px solid var(--line); border-radius:9px; padding:6px 8px; word-break:break-all;
+}
+
+/* 历史对话 */
+.history{display:flex; flex-direction:column; gap:5px; max-height:30vh; overflow-y:auto; margin:-3px}
+.hist{
+  display:flex; gap:9px; align-items:center; text-align:left; font:inherit; font-size:12.5px; width:100%;
+  cursor:pointer; color:var(--text-soft); border:1px solid transparent; background:transparent;
+  border-radius:var(--r-s); padding:7px 8px; transition:.15s;
+}
+.hist:hover{background:var(--tint); border-color:var(--line)}
+.hist.active{background:var(--tint); border-color:var(--line); color:var(--text); font-weight:600; box-shadow:var(--e1)}
+.hist .mini{
+  width:24px; height:24px; flex:0 0 24px; border-radius:9px; display:grid; place-items:center;
+  font-size:11px; font-weight:700; color:#fff; background:linear-gradient(135deg,var(--c-indigo),var(--c-cyan));
+}
+.hist .txt{min-width:0; flex:1}
+.hist .txt b{display:block; font-weight:inherit; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.hist .txt small{display:block; color:var(--muted); font-size:10.5px; font-weight:400; margin-top:1px}
+.hush{font-size:12px; color:var(--muted); line-height:1.7; padding:2px 3px}
+
+/* 推荐提问 */
+.chips{display:flex; flex-direction:column; gap:7px}
+.chip{
+  display:flex; align-items:flex-start; gap:10px; text-align:left; font:inherit;
+  cursor:pointer; color:var(--text-soft); padding:10px; background:transparent; transition:.16s;
+  border:1px solid var(--line); border-radius:var(--r-m);
+}
+.chip:hover{border-color:var(--tone); background:var(--tint); transform:translateX(2px)}
+.chip .qa{min-width:0; flex:1}
+.chip .topic{display:block; font-style:normal; font-size:10px; letter-spacing:.1em; color:var(--muted); margin-bottom:3px}
+.chip .q{display:block; font-size:12.5px; line-height:1.55; color:var(--text-soft)}
+.chip:hover .q{color:var(--text)}
+
+.side-foot{margin-top:auto; display:flex; gap:8px; padding-top:4px}
+.side-foot .btn{flex:1}
+
+/* =========================================================
+   4. 右栏
+   ========================================================= */
+.chat{display:flex; flex-direction:column; min-width:0; height:100%; position:relative}
+.topbar{
+  position:relative; display:flex; align-items:center; gap:12px; padding:13px 22px;
+  background:var(--panel); backdrop-filter:blur(20px);
+}
+.topbar::after{
+  content:""; position:absolute; left:0; right:0; bottom:0; height:1px; opacity:.62;
+  background:linear-gradient(90deg,transparent,var(--accent) 18%,var(--accent-2) 42%,#a855f7 62%,transparent 88%);
+  background-size:220% 100%; animation:stream 12s linear infinite;
+}
+.topbar h2{margin:0; font-size:14.5px}
+#tipLine{display:block; margin-top:3px; font-size:11.5px; color:var(--muted); transition:opacity .22s ease}
+.topbar .spacer{flex:1}
+.live{
+  display:inline-flex; align-items:center; gap:7px; font-size:11.5px; color:var(--text-soft);
+  border:1px solid var(--line); border-radius:999px; padding:5px 12px; background:var(--card); box-shadow:var(--e1);
+}
+.live i{width:7px; height:7px; border-radius:50%; background:var(--ok); animation:pulse 2.4s ease-out infinite}
+
+.thread{flex:1; overflow-y:auto; padding:26px 22px 8px}
+.wrap{max-width:840px; margin:0 auto; display:flex; flex-direction:column; gap:22px; position:relative}
+.wrap.has-msgs::before{
+  content:""; position:absolute; left:17.5px; top:8px; bottom:8px; width:1px;
+  background:linear-gradient(180deg,transparent,var(--line) 8%,var(--line) 92%,transparent);
+}
+
+/* —— 首屏 */
+.hero{text-align:center; padding:26px 0 6px; animation:rise .34s ease both}
+.hero .mark{
+  width:60px; height:60px; margin:0 auto 18px; border-radius:20px; font-size:30px; color:#fff;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed 50%,#0891b2); border:none; box-shadow:var(--e3);
+}
+.hero .eyebrow{justify-content:center}
+.hero h2{
+  margin:12px 0 0; font-size:26px; letter-spacing:-.6px; line-height:1.3;
+  background:linear-gradient(100deg,var(--text),var(--accent) 58%,var(--accent-2));
+  -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+}
+.starters{display:grid; grid-template-columns:1fr 1fr; gap:11px; max-width:672px; margin:26px auto 0; text-align:left}
+.starter{
+  font:inherit; cursor:pointer; padding:14px; border-radius:var(--r-m); text-align:left;
+  border:1px solid var(--line); box-shadow:var(--e1); transition:.2s;
+  background:linear-gradient(160deg,var(--tint),transparent 66%), var(--card);
+}
+.starter:hover{transform:translateY(-3px); box-shadow:var(--e3); border-color:var(--tone)}
+.starter .top{display:flex; align-items:center; gap:9px; margin-bottom:10px}
+.starter .topic{font-style:normal; font-size:10.5px; letter-spacing:.1em; color:var(--muted)}
+.starter b{display:block; font-size:13.5px; line-height:1.55; color:var(--text)}
+.starter .sub{display:block; margin-top:6px; font-size:11.5px; color:var(--muted); line-height:1.6}
+
+/* —— 消息 */
+.row{display:flex; gap:12px; animation:rise .28s ease both}
+.row.user{flex-direction:row-reverse}
+@keyframes rise{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:none}}
+.avatar{
+  width:36px; height:36px; flex:0 0 36px; border-radius:13px; display:grid; place-items:center;
+  font-size:12.5px; font-weight:800; color:#fff; position:relative; z-index:1;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  box-shadow:0 0 0 2px var(--card), 0 0 0 3.5px var(--accent-soft), var(--e2);
+}
+.row.user .avatar{background:linear-gradient(135deg,#64748b,#334155); box-shadow:0 0 0 2px var(--card), 0 0 0 3.5px var(--line), var(--e2)}
+.col{min-width:0; max-width:86%; display:flex; flex-direction:column; gap:6px}
+.row.user .col{align-items:flex-end}
+.who{font-size:11.5px; color:var(--muted); padding:0 3px}
+.bubble{
+  position:relative; padding:13px 16px; border-radius:var(--r-l); font-size:14.5px; line-height:1.78;
+  border:1px solid var(--line); box-shadow:var(--e2); overflow-wrap:anywhere;
+  background:linear-gradient(165deg,var(--accent-soft),transparent 58%), var(--card);
+}
+.row.bot .bubble{padding-left:19px}
+.row.bot .bubble::before{
+  content:""; position:absolute; left:0; top:14px; bottom:14px; width:3.5px; border-radius:0 4px 4px 0;
+  background:linear-gradient(180deg,var(--accent),var(--accent-2));
+}
+.row.user .bubble{
+  background:linear-gradient(135deg,#4f46e5,#0891b2); color:#fff; border:none;
+  box-shadow:var(--e2), inset 0 1px 0 rgba(255,255,255,.28);
+}
+.meta{display:flex; gap:10px; align-items:center; font-size:11px; color:var(--muted); padding:0 4px; min-height:16px}
+.meta button{
+  font:inherit; font-size:11px; cursor:pointer; color:var(--muted); background:transparent;
+  border:none; padding:2px 5px; border-radius:7px; transition:.15s;
+}
+.meta button:hover{color:var(--accent); background:var(--accent-soft)}
+.meta button.retry{
+  color:var(--accent); border:1px solid var(--line); background:var(--card); box-shadow:var(--e1);
+  padding:3px 10px; border-radius:8px;
+}
+.meta button.retry:hover{border-color:var(--accent); background:var(--accent-soft)}
+/* 回答末尾那行"依据"：细线 + 小字，像文章的脚注，不像机器的日志 */
+.refs{
+  display:flex; align-items:center; gap:7px; padding:0 5px; margin-top:-1px;
+  font-size:11px; color:var(--muted); letter-spacing:.02em;
+}
+.refs::before{content:""; flex:0 0 12px; width:12px; height:1px; background:currentColor; opacity:.45}
+.err .bubble{border-color:rgba(239,68,68,.5)}
+.err .bubble::before{background:linear-gradient(180deg,#f43f5e,#f59e0b)}
+
+/* 等待指示：只有三点呼吸，不写"我在检索"这种内部过程 */
+.thinking{display:inline-flex; gap:5px; align-items:center; padding:4px 0}
+.thinking i{width:7px; height:7px; border-radius:50%; background:var(--accent); opacity:.3; animation:breathe 1.15s infinite ease-in-out}
+.thinking i:nth-child(2){animation-delay:.16s}
+.thinking i:nth-child(3){animation-delay:.32s}
+@keyframes breathe{0%,80%,100%{transform:translateY(0); opacity:.28}40%{transform:translateY(-5px); opacity:1}}
+.caret{
+  display:inline-block; width:8px; height:16px; margin-left:2px; vertical-align:-3px;
+  background:linear-gradient(180deg,var(--accent),var(--accent-2)); border-radius:2px;
+  animation:blink 1s steps(2,start) infinite;
+}
+@keyframes blink{50%{opacity:0}}
+
+/* 正文排版（Markdown 产物） */
+.bubble p{margin:0 0 10px; text-wrap:pretty}
+.bubble p:last-child{margin-bottom:0}
+.bubble h3,.bubble h4{margin:15px 0 8px; font-size:15px; display:flex; align-items:center; gap:7px}
+.bubble h3::before{content:""; width:4px; height:15px; border-radius:2px; background:linear-gradient(180deg,var(--accent),var(--accent-2))}
+.bubble h3:first-child,.bubble h4:first-child{margin-top:0}
+.bubble ul,.bubble ol{margin:0 0 10px; padding-left:22px}
+.bubble li{margin:4px 0}
+.bubble li::marker{color:var(--accent)}
+.bubble blockquote{
+  margin:11px 0; padding:8px 13px; border-left:3px solid var(--accent); color:var(--text-soft);
+  background:linear-gradient(90deg,var(--accent-soft),transparent); border-radius:0 12px 12px 0;
+}
+.bubble hr{border:none; border-top:1px dashed var(--line); margin:15px 0}
+.bubble code{
+  font-family:var(--mono); font-size:12.8px; padding:1.5px 5px; border-radius:6px;
+  background:var(--accent-soft); color:var(--accent);
+}
+.bubble pre{
+  position:relative; margin:11px 0; padding:32px 13px 12px; overflow-x:auto;
+  border-radius:var(--r-m); border:1px solid var(--line); background:rgba(2,6,23,.055);
+}
+html[data-theme="dark"] .bubble pre{background:rgba(0,0,0,.42)}
+@media (prefers-color-scheme: dark){html[data-theme="auto"] .bubble pre{background:rgba(0,0,0,.42)}}
+.bubble pre::before{
+  content:""; position:absolute; top:12px; left:14px; width:9px; height:9px; border-radius:50%;
+  background:#f87171; box-shadow:15px 0 #fbbf24, 30px 0 #34d399;
+}
+.bubble pre code{background:none; color:var(--text); padding:0; font-size:12.8px; line-height:1.68}
+.bubble a{color:var(--accent); text-decoration:underline; text-underline-offset:2px}
+.row.user .bubble a{color:#fff}
+
+/* 回到最新 */
+.to-bottom{
+  position:absolute; right:24px; bottom:104px; z-index:5; cursor:pointer;
+  font:inherit; font-size:12px; color:var(--text-soft); padding:8px 14px; border-radius:999px;
+  border:1px solid var(--line); background:var(--card); box-shadow:var(--e2); transition:.18s;
+  animation:rise .22s ease both;
+}
+.to-bottom:hover{color:var(--accent); border-color:var(--accent); transform:translateY(-2px)}
+
+/* =========================================================
+   5. 输入区
+   ========================================================= */
+.composer{padding:14px 22px 18px}
+.composer-inner{
+  max-width:840px; margin:0 auto; border:1.5px solid transparent; border-radius:var(--r-xl);
+  background:
+    linear-gradient(var(--card),var(--card)) padding-box,
+    linear-gradient(120deg,var(--line),var(--accent-soft) 32%,var(--accent) 58%,var(--accent-2)) border-box;
+  box-shadow:var(--e3); padding:9px 9px 9px 15px;
+  display:flex; gap:10px; align-items:flex-end; transition:.22s;
+}
+.composer-inner:focus-within{
+  background:
+    linear-gradient(var(--card),var(--card)) padding-box,
+    linear-gradient(120deg,var(--accent),#a855f7 45%,var(--accent-2)) border-box;
+  box-shadow:0 0 0 4px var(--accent-soft),var(--e3);
+}
+#q{
+  flex:1; border:none; outline:none; resize:none; background:transparent; color:var(--text);
+  font:inherit; font-size:14.5px; line-height:1.6; max-height:180px; padding:9px 0;
+}
+#q::placeholder{color:var(--muted)}
+.send{
+  flex:0 0 auto; width:46px; height:46px; border-radius:16px; border:none; cursor:pointer; color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2)); display:grid; place-items:center;
+  transition:.18s; box-shadow:var(--e2);
+}
+.send:hover{filter:brightness(1.09); transform:translateY(-1px)}
+.send:disabled{opacity:.45; cursor:not-allowed; filter:grayscale(.45); transform:none}
+.send svg{width:19px; height:19px}
+.hint{
+  max-width:840px; margin:10px auto 0; display:flex; justify-content:space-between; gap:10px;
+  font-size:11px; color:var(--muted);
+}
+kbd{
+  font-family:var(--mono); font-size:10.5px; border:1px solid var(--line); border-bottom-width:2px;
+  border-radius:6px; padding:1px 5px; background:var(--card); color:var(--text-soft);
+}
+
+::selection{background:var(--accent); color:#fff}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:9px}
+::-webkit-scrollbar{width:9px; height:9px}
+::-webkit-scrollbar-thumb{background:var(--line); border-radius:9px; border:2px solid transparent; background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+/* =========================================================
+   6. 窄屏 + 无障碍
+   ========================================================= */
+.menu-btn{display:none}
+@media (max-width:880px){
+  .app{grid-template-columns:1fr}
+  .sidebar{
+    position:fixed; inset:0 auto 0 0; width:284px; z-index:40;
+    transform:translateX(-104%); transition:transform .28s cubic-bezier(.4,0,.2,1); box-shadow:var(--e3);
+  }
+  body.nav-open .sidebar{transform:none}
+  .menu-btn{display:inline-flex}
+  .col{max-width:92%}
+  .thread{padding:18px 12px 4px}
+  .composer{padding:10px 12px 14px}
+  .topbar{padding:11px 14px}
+  .starters{grid-template-columns:1fr}
+  .hero h2{font-size:22px}
+  .hint .tip{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001s !important; animation-iteration-count:1 !important; transition-duration:.001s !important}
+}
+</style>
 </head>
 <body>
-    <h1>我的数学笔记 Agent</h1>
 
-    <input id="q" placeholder="输入你的问题，比如：奇变偶不变是什么口诀？">
-    <button id="go">提问</button>
+<div class="bg" aria-hidden="true">
+  <div class="mesh"></div>
+  <div class="sheen"></div>
+  <div class="stream"></div>
+  <div class="scrim"></div>
+  <div class="grain"></div>
+</div>
 
-    <div id="out" style="white-space: pre-wrap; margin-top: 16px;"></div>
+<div class="app">
+  <!-- ================= 左栏 ================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-row">
+        <div class="mark">∑</div>
+        <div>
+          <h1>数学笔记助手</h1>
+          <p>高中数学 · 随手就问</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile t-indigo"><b id="statRounds">0</b><span>对话轮数</span></div>
+      <div class="tile t-emerald"><b id="statChars">0</b><span>回答字数</span></div>
+    </div>
+
+    <div class="card c-indigo lift">
+      <div class="sec"><span class="ico">💬</span><h2>当前对话</h2></div>
+      <div class="sess"><span class="dot" id="dot"></span><span id="statusText">连接中…</span></div>
+      <div class="field">
+        <label>对话编号</label>
+        <div class="sid" id="sidText"></div>
+      </div>
+      <div class="row-btns">
+        <button class="btn" id="copySid">复制编号</button>
+        <button class="btn" id="newChat">新建对话</button>
+      </div>
+    </div>
+
+    <div class="card c-cyan lift">
+      <div class="sec"><span class="ico">🕘</span><h2>历史对话</h2><span class="n" id="histCount">0</span></div>
+      <div class="history" id="history"></div>
+    </div>
+
+    <div class="card c-amber lift">
+      <div class="sec"><span class="ico">💡</span><h2>试试这样问</h2></div>
+      <div class="chips" id="chips"></div>
+    </div>
+
+    <div class="side-foot">
+      <button class="btn bare c-rose" id="themeBtn">🌗 跟随系统</button>
+      <button class="btn bare c-emerald" id="exportBtn">导出对话</button>
+    </div>
+  </aside>
+
+  <!-- ================= 右栏 ================= -->
+  <main class="chat">
+    <header class="topbar">
+      <button class="btn bare menu-btn" id="menuBtn" aria-label="打开侧栏">☰</button>
+      <div>
+        <h2>数学笔记助手</h2>
+        <span id="tipLine">问得越具体，答得越清楚</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="live"><i></i><span id="liveText">已连接</span></span>
+    </header>
+
+    <div class="thread" id="thread" aria-live="polite">
+      <div class="wrap" id="wrap">
+        <div class="hero" id="hero">
+          <div class="mark">∑</div>
+          <em class="eyebrow">高中数学 · 笔记问答</em>
+          <h2>有不懂的，问一句就行</h2>
+          <div class="starters">
+            <button class="starter c-indigo" data-ask="诱导公式那个“奇变偶不变”口诀到底啥意思？">
+              <span class="top"><span class="glyph">π</span><em class="topic">三角函数</em></span>
+              <b>诱导公式的口诀，到底在说什么？</b>
+              <span class="sub">“奇变偶不变，符号看象限”怎么用</span>
+            </button>
+            <button class="starter c-cyan" data-ask="导数为零的点为什么不一定就是极值点？">
+              <span class="top"><span class="glyph">∂</span><em class="topic">导数</em></span>
+              <b>导数为零的点，一定是极值点吗？</b>
+              <span class="sub">答案是“不一定”，看那个反例就明白了</span>
+            </button>
+            <button class="starter c-emerald" data-ask="等比数列求和最容易漏掉哪种情况？">
+              <span class="top"><span class="glyph">aₙ</span><em class="topic">数列</em></span>
+              <b>等比数列求和，最容易漏掉哪种情况？</b>
+              <span class="sub">漏一步就扣分，这里最容易翻车</span>
+            </button>
+            <button class="starter c-rose" data-ask="样本方差的分母为什么是 n 减一？">
+              <span class="top"><span class="glyph">σ</span><em class="topic">概率统计</em></span>
+              <b>样本方差的分母，为什么是 n 减一？</b>
+              <span class="sub">不是写错，是有原因的</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="to-bottom" id="toBottom" hidden>回到最新</button>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <textarea id="q" rows="1" placeholder="输入问题，例如：诱导公式的口诀是什么？"></textarea>
+        <button class="send" id="go" aria-label="发送">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12h15M13 6l6 6-6 6"/>
+          </svg>
+        </button>
+        <button class="btn" id="stop" style="display:none; height:46px; padding:0 14px">停止生成</button>
+      </div>
+      <div class="hint">
+        <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · <kbd>Esc</kbd> 停止</span>
+        <span class="tip">内容依据笔记整理，仅供参考</span>
+      </div>
+    </div>
+  </main>
+</div>
+
 <script>
-    // ===== 新增①：拿到（或新建）本浏览器的会话号 =====
-    let sid = localStorage.getItem("s5_sid");   // 去浏览器的"储物柜"找；没有就是 null
-    if (!sid) {                                 // 第一次来 → 柜子里没有
-                // 安全上下文（https / localhost）才有 randomUUID；http 公网没有 → 退回随机串
-        sid = (window.crypto && crypto.randomUUID)
-            ? crypto.randomUUID()
-            : "sid-" + Date.now() + "-" + Math.random().toString(16).slice(2);
-        localStorage.setItem("s5_sid", sid);    // 存回柜子 → 以后刷新都还是它
+/* =========================================================
+   0. 常量 & 小工具
+   ========================================================= */
+const SID_KEY = "s5_sid";          // 沿用旧键，老对话不会丢
+const THEME_KEY = "s5_theme";
+const SESS_KEY = "s5_sessions";
+const MAX_SESS = 20;
+
+const $ = (id) => document.getElementById(id);
+const thread = $("thread"), wrap = $("wrap");
+
+const state = { busy: false, ctrl: null, msgs: [], sid: "" };
+
+/* 后端在流末尾 / 出错时会推"带标记的帧"：它不是正文，而是元数据。
+     [[REF]]小节A|小节B   → 回答末尾那行"依据笔记：…"
+     [[ERR]]一句话        → 错误气泡 + 重试按钮
+   ⚠️ 两个标记必须和后端 agent.py 里的 REF_TAG / ERR_TAG 保持一致。
+   🔴 为什么要先拼整帧再判断：前端只会收到一串文本，不靠标记就分不清"这是答案"还是"这是错误"。 */
+const REF_TAG = "[[REF]]", ERR_TAG = "[[ERR]]";
+function cleanSection(s){ return String(s).replace(/^[一二三四五六七八九十]+、\s*/, "").trim(); }
+function applyChunk(bot, chunk){
+  if (chunk.startsWith(ERR_TAG)){ bot.text = chunk.slice(ERR_TAG.length); bot.err = true; return; }
+  if (chunk.startsWith(REF_TAG)){
+    bot.refs = chunk.slice(REF_TAG.length).split("|").map(cleanSection).filter(Boolean).slice(0, 3);
+    return;
+  }
+  bot.text += chunk;
+}
+
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function clock(ts){
+  const d = new Date(ts), p = (n) => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function ago(ts){
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return "刚刚";
+  if (m < 60) return m + " 分钟前";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + " 小时前";
+  return Math.floor(h / 24) + " 天前";
+}
+function stampFile(){
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+}
+function copyText(text, btn, okWord){
+  const done = () => { if (btn){ const old = btn.textContent; btn.textContent = okWord || "已复制"; setTimeout(() => btn.textContent = old, 1300); } };
+  if (navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(done).catch(() => oldCopy(text, done));
+  } else oldCopy(text, done);
+}
+function oldCopy(text, done){        // http 公网 / 老浏览器兜底
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch(e){}
+  document.body.removeChild(ta);
+}
+
+/* =========================================================
+   1. 对话编号：localStorage = 浏览器的储物柜
+   🔴 必须会：HTTP 无状态，服务端靠 session_id 认人 → 前端得自己存住它
+   ========================================================= */
+function newSid(){
+  return (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : "sid-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+}
+function loadSessions(){
+  try { return JSON.parse(localStorage.getItem(SESS_KEY)) || []; } catch(e){ return []; }
+}
+function saveSessions(list){
+  try { localStorage.setItem(SESS_KEY, JSON.stringify(list.slice(0, MAX_SESS))); } catch(e){}
+}
+const urlSid = new URLSearchParams(location.search).get("session");
+const bootList = loadSessions();
+state.sid = urlSid || localStorage.getItem(SID_KEY) || (bootList[0] && bootList[0].sid) || newSid();
+localStorage.setItem(SID_KEY, state.sid);
+
+function paintSid(){ $("sidText").textContent = state.sid; }
+function setSid(sid){
+  state.sid = sid; localStorage.setItem(SID_KEY, sid);
+  const cur = loadSessions().find(s => s.sid === sid);
+  state.msgs = cur ? cur.messages.slice() : [];
+  paintSid(); renderAll(); renderHistory();
+}
+function persist(){                  // 把当前对话写回历史列表（标题 = 第一句提问）
+  if (!state.msgs.length) return;
+  const list = loadSessions().filter(s => s.sid !== state.sid);
+  const firstQ = state.msgs.find(m => m.role === "user");
+  list.unshift({
+    sid: state.sid,
+    title: firstQ ? firstQ.text.replace(/\s+/g, " ").slice(0, 24) : "新对话",
+    ts: Date.now(),
+    messages: state.msgs.slice(-40)
+  });
+  saveSessions(list); renderHistory();
+}
+
+/* =========================================================
+   2. 主题三态：跟随系统 / 浅色 / 深色
+   ========================================================= */
+const THEMES = [
+  { k:"auto",  label:"🌗 跟随系统" },
+  { k:"light", label:"☀️ 浅色" },
+  { k:"dark",  label:"🌙 深色" }
+];
+let themeIdx = Math.max(0, THEMES.findIndex(t => t.k === (localStorage.getItem(THEME_KEY) || "auto")));
+function applyTheme(){
+  const t = THEMES[themeIdx];
+  document.documentElement.dataset.theme = t.k;
+  localStorage.setItem(THEME_KEY, t.k);
+  $("themeBtn").textContent = t.label;
+}
+applyTheme();
+
+/* =========================================================
+   3. 迷你 Markdown：先转义，再套标签
+   🟡 看得懂会改：只认常见几种，够笔记问答用了
+   ========================================================= */
+function md(src){
+  const blocks = [];
+  let text = esc(src);
+  text = text.replace(/```[a-zA-Z]*\n?([\s\S]*?)```/g, (m, code) => {   // 先摘出代码块，免得被后面规则误伤
+    blocks.push('<pre><code>' + code.replace(/\n$/, "") + '</code></pre>');
+    return "\u0000" + (blocks.length - 1) + "\u0000";
+  });
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(（])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  const out = [];
+  let list = null;
+  const closeList = () => { if (list){ out.push("</" + list + ">"); list = null; } };
+
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (/^\u0000\d+\u0000$/.test(line.trim())) { closeList(); out.push(line.trim()); continue; }
+    if (!line.trim()) { closeList(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      closeList();
+      const lv = m[1].length <= 2 ? 3 : 4;
+      out.push("<h" + lv + ">" + inline(m[2]) + "</h" + lv + ">");
+    } else if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
+      closeList(); out.push("<hr>");
+    } else if ((m = line.match(/^&gt;\s?(.*)$/))) {          // > 已被转义成 &gt;
+      closeList(); out.push("<blockquote>" + inline(m[1]) + "</blockquote>");
+    } else if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) {
+      if (list !== "ul"){ closeList(); out.push("<ul>"); list = "ul"; }
+      out.push("<li>" + inline(m[1]) + "</li>");
+    } else if ((m = line.match(/^\s*\d+[.、)]\s+(.*)$/))) {
+      if (list !== "ol"){ closeList(); out.push("<ol>"); list = "ol"; }
+      out.push("<li>" + inline(m[1]) + "</li>");
+    } else {
+      closeList(); out.push("<p>" + inline(line) + "</p>");
     }
+  }
+  closeList();
+  return out.join("").replace(/\u0000(\d+)\u0000/g, (m, i) => blocks[+i]);
+}
 
-    function askQuestion() {                                          // 定义一个函数（点击时执行）
-        const out = document.getElementById("out");                   // 找到显示区
-        out.textContent = "";                        // 先给反馈
-        const question = document.getElementById("q").value;          // 读出输入框里的字
+/* =========================================================
+   4. 渲染
+   ========================================================= */
+const HERO_HTML = $("hero") ? $("hero").outerHTML : "";   // 首屏只写一次，清空后照它重建
 
-        const es = new EventSource("/ask_stream?question=" + encodeURIComponent(question) + "&session_id=" + sid);
-        es.onmessage = (e) => { out.textContent += e.data; };   // ← 累加，不是赋值
-        es.onerror = () => { es.close(); };   // 收完/出错就断开（不然它会自动重连，答案会重复贴！）
+function renderAll(){
+  wrap.innerHTML = "";
+  wrap.classList.toggle("has-msgs", state.msgs.length > 0);
+  if (!state.msgs.length){ wrap.insertAdjacentHTML("beforeend", HERO_HTML); }
+  else state.msgs.forEach((m, i) => wrap.appendChild(rowNode(m, i)));   // 带上下标：重试要知道"这一条对应哪个提问"
+  updateStats(); scrollBottom(true);
+}
+function rowNode(m, idx){
+  const row = document.createElement("div");
+  row.className = "row " + (m.role === "user" ? "user" : "bot") + (m.err ? " err" : "");
+  const av = document.createElement("div");
+  av.className = "avatar"; av.textContent = m.role === "user" ? "我" : "∑";
+
+  const col = document.createElement("div"); col.className = "col";
+  const who = document.createElement("div"); who.className = "who";
+  who.textContent = m.role === "user" ? "你" : "数学笔记助手";
+
+  const bub = document.createElement("div"); bub.className = "bubble";
+  bub.innerHTML = md(m.text);
+
+  const meta = document.createElement("div"); meta.className = "meta";
+  if (m.role === "user"){
+    if (m.ts){ const s = document.createElement("span"); s.textContent = clock(m.ts); meta.appendChild(s); }
+    meta.appendChild(mkBtn("复制", (b) => copyText(m.text, b)));
+  } else {
+    const bits = [];
+    if (!m.err){                                   // 出错时不报"用时/字数"，那些数字对用户没有意义
+      if (m.ms) bits.push("用时 " + (m.ms / 1000).toFixed(1) + " 秒");
+      if (m.text) bits.push(m.text.length + " 字");
     }
+    if (m.ts) bits.push(clock(m.ts));
+    if (bits.length){ const s = document.createElement("span"); s.textContent = bits.join(" · "); meta.appendChild(s); }
+    if (m.err && !m.noRetry) meta.appendChild(mkBtn("重试", () => retry(m, idx), "retry"));
+    if (!m.err) meta.appendChild(mkBtn("复制回答", (b) => copyText(m.text, b)));
+  }
 
-    document.getElementById("go").addEventListener("click", askQuestion);  // 把函数交给按钮（不带括号）
+  col.append(who, bub);
+  if (m.role !== "user" && m.refs && m.refs.length){   // 依据那行放在气泡外面、元信息上面，像脚注
+    const rf = document.createElement("div");
+    rf.className = "refs";
+    rf.textContent = "依据笔记：" + m.refs.join("、");
+    col.appendChild(rf);
+  }
+  col.appendChild(meta);
+  row.append(av, col);
+  return row;
+}
+function mkBtn(label, fn, cls){
+  const b = document.createElement("button");
+  b.textContent = label; if (cls) b.className = cls;
+  b.addEventListener("click", () => fn(b));
+  return b;
+}
+/* 重试：把这条失败的"回答"和它对应的"提问"一起删掉再重问 ——
+   不然历史里会留下一堆重复的提问，看着像刷屏。 */
+function prevQuestion(idx){
+  const from = (idx == null ? state.msgs.length - 2 : idx - 1);
+  for (let i = from; i >= 0; i--){
+    if (state.msgs[i] && state.msgs[i].role === "user") return state.msgs[i].text;
+  }
+  return "";
+}
+function retry(m, idx){
+  if (state.busy) return;
+  const q = prevQuestion(idx);
+  if (!q){ return; }
+  const i = state.msgs.indexOf(m);
+  if (i >= 0) state.msgs.splice(i, 1);
+  if (i > 0 && state.msgs[i - 1] && state.msgs[i - 1].role === "user") state.msgs.splice(i - 1, 1);
+  renderAll(); persist();
+  ask(q);
+}
+function updateStats(){
+  const rounds = state.msgs.filter(m => m.role === "user").length;
+  const chars = state.msgs.filter(m => m.role !== "user").reduce((n, m) => n + m.text.length, 0);
+  $("statRounds").textContent = rounds;
+  $("statChars").textContent = chars > 9999 ? (chars / 1000).toFixed(1) + "k" : chars;
+}
+function nearBottom(){ return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 140; }
+function scrollBottom(force){ if (force || nearBottom()) thread.scrollTop = thread.scrollHeight; }
+
+/* =========================================================
+   5. 流式提问
+   🔴 必须会：fetch → ReadableStream → 边读边解析 SSE 帧 → 边拼边画
+      服务端每一片长这样：  data: 一小段文字\n\n
+   ========================================================= */
+async function ask(question){
+  question = (question || "").trim();
+  if (state.busy || !question) return;
+  state.busy = true;
+  $("go").disabled = true;
+  $("stop").style.display = "inline-flex";
+
+  state.msgs.push({ role: "user", text: question, ts: Date.now() });
+  if (state.msgs.length === 1){ wrap.innerHTML = ""; wrap.classList.add("has-msgs"); }
+  wrap.appendChild(rowNode(state.msgs[state.msgs.length - 1], state.msgs.length - 1));
+  updateStats(); scrollBottom(true);
+
+  const t0 = Date.now();
+  const bot = { role: "bot", text: "", ts: Date.now(), streaming: true };
+  state.msgs.push(bot);
+
+  const node = document.createElement("div");       // 先放等待气泡（只有三点，不写内部过程）
+  node.className = "row bot";
+  node.innerHTML = '<div class="avatar">∑</div><div class="col">'
+    + '<div class="who">数学笔记助手</div>'
+    + '<div class="bubble"><span class="thinking"><i></i><i></i><i></i></span></div>'
+    + '<div class="meta"><span>正在回答…</span></div></div>';
+  wrap.appendChild(node);
+  scrollBottom(true);
+
+  const bub = node.querySelector(".bubble");
+  let painted = null;
+  const paint = () => {                          // 一帧最多重绘一次，流得快也不卡
+    if (painted) return;
+    painted = requestAnimationFrame(() => {
+      painted = null;
+      bub.innerHTML = md(bot.text);
+      bub.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+      scrollBottom(false);
+    });
+  };
+
+  state.ctrl = new AbortController();
+  /* 卡住检测：30 秒一个字节都没来，就当它挂了并主动放弃。
+     🔴 为什么需要：流式请求没有"总超时"的概念，服务端卡死时浏览器会一直挂着 ——
+        用户看到的是一个永远转圈的三点，而不是一句能看懂的失败。 */
+  const IDLE_MS = 30000;
+  let idleTimer = null;
+  const bumpIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (state.ctrl) state.ctrl.abort("IDLE"); }, IDLE_MS);
+  };
+  bumpIdle();
+
+  const url = "/ask_stream?question=" + encodeURIComponent(question)
+            + "&session_id=" + encodeURIComponent(state.sid);
+  try {
+    const res = await fetch(url, { signal: state.ctrl.signal, headers: { "Accept": "text/event-stream" } });
+    const ctype = res.headers.get("content-type") || "";
+    if (!res.ok || !ctype.includes("text/event-stream")) throw new Error("AUTH");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    while (true){
+      const { value, done } = await reader.read();
+      if (done) break;
+      bumpIdle();                                    // 只要有数据就重置"卡住"计时
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0){        // 一个空行 = 一帧结束
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        let chunk = "";                              // 先把这一帧拼完整，再交给 applyChunk 判断类型
+        for (const ln of frame.split("\n")){
+          if (ln.startsWith("data:")) chunk += ln.slice(5).replace(/^ /, "");
+          else if (ln.trim()) chunk += ln;           // 服务端裸文本带换行时的兜底
+        }
+        if (chunk) applyChunk(bot, chunk);
+      }
+      paint();
+    }
+    if (buf.trim()) applyChunk(bot, buf.replace(/^data:\s?/gm, ""));   // 收尾：可能还剩半帧
+    if (!bot.text.trim() && !bot.err) throw new Error("EMPTY");
+  } catch (e) {
+    if (e.name === "AbortError" && state.ctrl && state.ctrl.signal.reason === "IDLE"){
+      bot.text = (bot.text ? bot.text + "\n\n" : "") + "等太久了，服务可能正忙，请重试。";
+      bot.err = true;
+    } else if (e.name === "AbortError"){
+      bot.text += (bot.text ? "\n\n" : "") + "_（已停止生成）_";
+    } else if (e.message === "AUTH"){
+      // 口令问题：重试也没用，所以这条不给"重试"按钮，只告诉他怎么进来
+      bot.text = "访问验证未通过，请使用带口令的链接打开本页，或返回登录页重新输入。";
+      bot.err = true; bot.noRetry = true;
+    } else if (e.message === "EMPTY"){
+      bot.text = "这次没有收到回答，请稍后再试一次。";
+      bot.err = true;
+    } else {
+      bot.text = "连接出了点问题，检查一下网络再试一次。";
+      bot.err = true;
+      console.error("[ask_stream]", e);              // 技术细节进控制台，不给用户看
+    }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (painted) cancelAnimationFrame(painted);
+    bot.streaming = false;
+    bot.ms = Date.now() - t0;
+    state.busy = false; state.ctrl = null;
+    $("go").disabled = false;
+    $("stop").style.display = "none";
+    node.replaceWith(rowNode(bot, state.msgs.length - 1));
+    scrollBottom(false);
+    persist(); updateStats();
+  }
+}
+
+/* =========================================================
+   6. 界面事件
+   ========================================================= */
+/* 推荐提问：全部取自 rag_docs/检索测试题.md（那份文件里每题都标了"应命中哪一节"），
+   并逐条核到《高中数学核心知识笔记.md》原文。笔记里没有的（洛必达 / 矩阵 / 贝叶斯）一律不放。 */
+const EXAMPLES = [
+  { glyph:"ƒ",  topic:"函数",     q:"判断一个关系是不是函数，关键看什么？" },
+  { glyph:"≤",  topic:"不等式",   q:"用基本不等式求最值，为什么要检查等号能不能取到？" },
+  { glyph:"△",  topic:"立体几何", q:"二面角的三种做法分别是什么？" },
+  { glyph:"◎",  topic:"解析几何", q:"椭圆的 a、b、c 是什么关系？双曲线呢？" }
+];
+EXAMPLES.forEach(x => {
+  const b = document.createElement("button");
+  b.className = "chip c-amber"; b.type = "button";
+  b.innerHTML = '<span class="glyph">' + x.glyph + '</span>'
+    + '<span class="qa"><em class="topic">' + esc(x.topic) + '</em>'
+    + '<span class="q">' + esc(x.q) + '</span></span>';
+  b.addEventListener("click", () => { $("q").value = ""; autoGrow(); ask(x.q); });
+  $("chips").appendChild(b);
+});
+
+// 首屏那些卡片是 HTML 字符串重建的，绑不上单个监听器 → 用事件委托
+wrap.addEventListener("click", (e) => {
+  const card = e.target.closest("[data-ask]");
+  if (card) ask(card.dataset.ask);
+});
+
+$("go").addEventListener("click", () => { const v = $("q").value; $("q").value = ""; autoGrow(); ask(v); });
+$("stop").addEventListener("click", () => state.ctrl && state.ctrl.abort());
+$("newChat").addEventListener("click", () => { persist(); setSid(newSid()); $("q").focus(); });
+$("copySid").addEventListener("click", (e) => copyText(state.sid, e.currentTarget, "已复制"));
+$("themeBtn").addEventListener("click", () => { themeIdx = (themeIdx + 1) % THEMES.length; applyTheme(); });
+$("menuBtn").addEventListener("click", () => document.body.classList.toggle("nav-open"));
+$("exportBtn").addEventListener("click", () => {
+  if (!state.msgs.length){ flash($("exportBtn"), "暂无可导出内容"); return; }
+  const body = state.msgs.map(m => (m.role === "user" ? "## 我\n\n" : "## 回答\n\n") + m.text).join("\n\n---\n\n");
+  const head = "# 数学笔记助手 · 对话导出\n\n对话编号：`" + state.sid + "`\n\n导出时间："
+             + new Date().toLocaleString("zh-CN") + "\n\n---\n\n";
+  const blob = new Blob([head + body], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "对话导出-" + stampFile() + ".md";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+function flash(btn, word){
+  const old = btn.textContent; btn.textContent = word;
+  setTimeout(() => btn.textContent = old, 1300);
+}
+
+const ta = $("q");
+function autoGrow(){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 180) + "px"; }
+ta.addEventListener("input", autoGrow);
+ta.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing){    // isComposing：中文输入法选字那一下回车不算发送
+    e.preventDefault();
+    const v = ta.value; ta.value = ""; autoGrow(); ask(v);
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.busy && state.ctrl) state.ctrl.abort();
+});
+thread.addEventListener("scroll", () => { $("toBottom").hidden = nearBottom(); });
+$("toBottom").addEventListener("click", () => scrollBottom(true));
+
+/* 顶栏那行小字：讲"用户能得到什么"，不讲系统怎么做 */
+const TIPS = [
+  "问得越具体，答得越清楚",
+  "支持连续追问，不用重复说背景",
+  "从任意一章开始问都可以",
+  "换个说法再问一次，也可以",
+  "想不到问什么，就点左边的推荐问题"
+];
+let tipIdx = 0;
+setInterval(() => {
+  tipIdx = (tipIdx + 1) % TIPS.length;
+  const el = $("tipLine");
+  el.style.opacity = 0;
+  setTimeout(() => { el.textContent = TIPS[tipIdx]; el.style.opacity = 1; }, 220);
+}, 7000);
+
+/* =========================================================
+   7. 历史列表 + 启动
+   ========================================================= */
+function renderHistory(){
+  const box = $("history"), list = loadSessions();
+  box.innerHTML = "";
+  $("histCount").textContent = list.length;
+  if (!list.length){
+    box.innerHTML = '<div class="hush">还没有对话记录。问第一句，这里就会记下来。</div>';
+    return;
+  }
+  list.forEach(s => {
+    const b = document.createElement("button");
+    b.className = "hist" + (s.sid === state.sid ? " active" : "");
+    b.innerHTML = '<span class="mini">' + esc((s.title || "对")[0]) + '</span>'
+      + '<span class="txt"><b>' + esc(s.title) + '</b>'
+      + '<small>' + ago(s.ts) + '</small></span>';
+    b.addEventListener("click", () => {
+      if (s.sid === state.sid){ document.body.classList.remove("nav-open"); return; }
+      persist();
+      setSid(s.sid);
+      document.body.classList.remove("nav-open");
+    });
+    box.appendChild(b);
+  });
+}
+function setStatus(ok, text){
+  $("dot").className = "dot " + (ok ? "on" : "off");
+  $("statusText").textContent = text;
+  $("liveText").textContent = ok ? "已连接" : text;
+}
+(async function boot(){
+  paintSid();
+  const cur = loadSessions().find(s => s.sid === state.sid);
+  state.msgs = cur ? cur.messages.slice() : [];
+  renderAll(); renderHistory();
+  try {                                                     // 探活（顺带验证访问口令）
+    const r = await fetch("/hello", { cache: "no-store" });
+    setStatus(r.ok, r.ok ? "已连接" : "需要验证");
+  } catch(e){ setStatus(false, "连接失败"); }
+  ta.focus();
+})();
 </script>
 </body>
 </html>
-
-
-

@@ -1,5 +1,5 @@
 # ===== S5 / agent.py =====
-import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs
+import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs, cache, re
 from openai import OpenAI
 from typing import Annotated, Literal, TypedDict
 from pydantic import BaseModel, Field
@@ -309,6 +309,20 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
     #    不减掉旧消息，token 统计就会把前几轮重复计入。
     snap = await graph.aget_state(cfg)
     n_before = len(snap.values.get("messages", []))
+    # 🔴 批④ 4-1：先查两级缓存（键 = 版本 + 模型 + 历史指纹 + 问题归一化）。
+    #    历史聊到第几轮变了，键就变 —— 不会拿旧答案冒充新答案。
+    #    resume（人工确认的答复）绝不走缓存：那必须真的把图续跑起来。
+    ck = None
+    if resume is None and question:
+        ck = cache.make_key(question, session_id, n_before)
+        hit_text, where = cache.default().get(ck)
+        if hit_text is not None:
+            meta = {"usage": {"input": 0, "output": 0, "total": 0}, "tools": [], "n_tool_calls": 0,
+                    "retries": [], "timeout": False, "interrupt": False, "latency_ms": 0,
+                    "cache_where": where, "cache_mode": cache.default().mode}
+            obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
+                          text=hit_text, cache_hit=True, **meta)
+            return (hit_text, meta) if with_meta else hit_text
     RETRY_LOG.clear()            # 本轮的重试记录从零开始数
     payload = Command(resume=resume) if resume is not None else {"messages": [HumanMessage(question)]}
     t0 = time.monotonic()
@@ -335,47 +349,61 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
         meta["interrupt"] = False
         text = out["messages"][-1].content
     return_text = (text, meta) if with_meta else text
+    # 🔴 批④ 4-1：写缓存，两道闸门（有写类工具 / 停在人工确认 → 绝不写）。
+    tools_used = meta.get("tools") or []
+    if ck and not meta["interrupt"] and not any(t in DANGEROUS_TOOLS for t in tools_used):
+        cache.default().set(ck, text)
+    meta["cache_where"] = None                     # 本轮真跑了图：没命中缓存
+    meta["cache_mode"] = cache.default().mode      # redis / memory-only（降级可见）
     obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
                   text=text, cache_hit=False, **meta)  # cache_hit=False表示这次确实运行了图，不是从缓存直接返回
     return return_text
 
 
 async def answer_cached(session_id, question):
-    cache_key = (session_id, question)
-    if cache_key in _answer_cache:                        # ① 答过的题白送、不记账
-        obs.log_event(kind="answer", session_id=session_id, question=question,
-                      text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
-                      usage={"input": 0, "output": 0, "total": 0}, tools=[],
-                      n_tool_calls=0, retries=[], timeout=False, interrupt=False)
-        return _answer_cache[cache_key]
-    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ② 查账本：满了就拦
+    # 批④ 4-1：这里原来那套 _answer_cache（键 = session_id + question，键里没有历史）已撤掉 ——
+    #    缓存统一由 graph_answer 走 cache.py 两级缓存；一个系统只留一层缓存逻辑。
+    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ① 查账本：满了就拦
         return "今天额度已用完，明天再来吧"
-    result = await graph_answer(session_id, question)                 # ③ 放行才答题
-    _answer_cache[cache_key] = result
-    await quota_db.count_one(question, result)                  # ④ 记账
+    result = await graph_answer(session_id, question)           # ② 放行才答题（命中缓存时图里直接返回）
+    await quota_db.count_one(question, result)                  # ③ 记账
     return result
 
+
+# 给前端的两种"元数据帧"标记（前端 index.html 里有同名常量，两边必须一致）：
+#   [[REF]]小节A|小节B   本轮检索命中的笔记小节 —— 前端渲染成回答末尾那行"依据笔记：…"
+#   [[ERR]]一句话        出错提示 —— 前端渲染成错误气泡 + 重试按钮
+# 🔴 为什么要用标记：前端收到的只是一串文本，它无法自己分辨"这是答案"还是"这是错误"。
+REF_TAG = "[[REF]]"
+ERR_TAG = "[[ERR]]"
 
 async def stream_answer(session_id, question):
     """图版流式：把 while True 换成 agent_graph.astream"""
     cache_key = (session_id, question)
-    if cache_key in _answer_cache:                       # ① 白送
-        obs.log_event(kind="answer", session_id=session_id, question=question,
-                      text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
-                      usage={"input": 0, "output": 0, "total": 0}, tools=[],
-                      n_tool_calls=0, retries=[], timeout=False, interrupt=False)
-        yield f"data: {_answer_cache[cache_key]}\n\n"
-        return
-    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ② 拦
-        yield f"data: 今天额度已用完，明天再来吧\n\n"
-        return
-
-    graph = await _get_graph()
-    cfg = {"configurable": {"thread_id": session_id}}
-
     text_buf = ""          # 攒这一轮的正文（用来存缓存 + 写 qa_log）
     n_text = 0
+    stream_ok = False      # 只有"整段跑完"才允许写缓存 / 记账
+    refs = []              # 本轮检索命中的笔记小节（去重，最多给前端 3 个）
+
+    # 🔴 外层 try（2026-10-16 补）：原来 used_today() 和 _get_graph() 在 try 外面，
+    #    依赖一挂（MySQL 没起、图装配失败）异常就直接穿透生成器 →
+    #    浏览器只收到"200 + 空流"，用户看到"没有收到回答"，控制台也难定位。
+    #    现在：任何依赖问题都给用户一句人话，技术细节留在控制台。
     try:
+        if cache_key in _answer_cache:                       # ① 白送
+            obs.log_event(kind="answer", session_id=session_id, question=question,
+                          text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
+                          usage={"input": 0, "output": 0, "total": 0}, tools=[],
+                          n_tool_calls=0, retries=[], timeout=False, interrupt=False)
+            yield f"data: {_answer_cache[cache_key]}\n\n"
+            return
+        if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ② 拦
+            yield "data: 今天额度已用完，明天再来吧\n\n"
+            return
+
+        graph = await _get_graph()
+        cfg = {"configurable": {"thread_id": session_id}}
+
         print(f"🔎 [图-流] 开始：session={session_id} question={question!r}")
         async for mode, payload in graph.astream(
                 {"messages": [HumanMessage(question)]}, config=cfg,
@@ -383,19 +411,36 @@ async def stream_answer(session_id, question):
         ):
             if mode == "messages":
                 chunk, meta = payload
-                if meta.get("langgraph_node") == "model" and chunk.content:
+                node = meta.get("langgraph_node")
+                if node == "model" and chunk.content:
                     n_text += 1
                     piece = chunk.content.replace("\n", " ")     # 换行会把 SSE 切坏
                     text_buf += piece
                     yield f"data: {piece}\n\n"
-        print(f"🔎 [图-流] 结束：正文片数={n_text}")
+                elif node == "tools" and isinstance(chunk.content, str):
+                    # 🔴 依据从工具返回里抓：search_notes 的输出里带"（来源：小节名）"（见本文件 search_notes）
+                    for name in re.findall(r"（来源：([^）]+)）", chunk.content):
+                        if name not in refs:
+                            refs.append(name)
+        stream_ok = True
+        print(f"🔎 [图-流] 结束：正文片数={n_text} 依据={refs}")
+        if refs:                                    # ④ 末尾多推一帧"依据"（前端不当正文看）
+            yield f"data: {REF_TAG}{'|'.join(refs[:3])}\n\n"
     except Exception as e:
-        print("❌ [图-流] stream_answer 出错：", repr(e))
-        yield f"data: 【流式中断】{type(e).__name__}: {e}\n\n"
+        print("❌ [图-流] 失败：", repr(e))          # 技术细节只进控制台，不给用户看
+        # ⚠️ 下面这两句必须是【单行】：SSE 靠空行分帧，消息里带换行会把一帧切成两帧
+        if text_buf:
+            yield f"data: {ERR_TAG}回答中断了，请再问一次\n\n"
+        else:
+            yield f"data: {ERR_TAG}服务暂时不可用，请稍后再试一次\n\n"
 
-    if text_buf:                                             # ④ 答成才记账
+    if text_buf and stream_ok:                               # ④ 整段答成才记账
         _answer_cache[cache_key] = text_buf
-        await quota_db.count_one(question, text_buf)
+        try:
+            await quota_db.count_one(question, text_buf)
+        except Exception as e:
+            # 记账失败不该把"已经答完的内容"搞脏，更不该让用户看到报错
+            print("❌ [额度] 记账失败（本次回答不受影响）：", repr(e))
 
 
 # ================= 结构化输出（Pydantic + with_structured_output） =================

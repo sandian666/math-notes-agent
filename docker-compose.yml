@@ -8,6 +8,10 @@ services:
       MYSQL_ROOT_PASSWORD: ${S6_DB_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql    # 把名为 mysql_data 的 Docker 数据卷挂载到容器内的 MySQL 数据目录
+    ports:
+      # 🔴 只绑 127.0.0.1（不是 0.0.0.0）：本地开发时 app 在宿主机上跑，连 127.0.0.1:3306 就能到容器；
+      #    而公网 / 局域网扫不到这个端口 —— 数据库端口暴露面最小化（写 3306:3306 等于开到全网）。
+      - "127.0.0.1:3306:3306"
     healthcheck:  # Docker 会在数据库容器内部执行 mysqladmin ping，检查 MySQL 是否真的可以连接。
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 5s
