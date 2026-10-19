@@ -1,5 +1,5 @@
 # ===== S5 / agent.py =====
-import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs, cache, ratelimit, re
+import asyncio, os, time, datetime, requests, quota_db, aiosqlite, obs, cache, ratelimit, re
 from openai import OpenAI
 from typing import Annotated, Literal, TypedDict
 from pydantic import BaseModel, Field
@@ -33,15 +33,32 @@ embed_client = OpenAI(api_key=os.environ.get("ZHIPU_API_KEY"),
 chat_model = "deepseek-flash"      # 官方登记名，小写 + 短横线；你原来那个是"展示名"，不是登记名
 
 # ================= 向量库 =================
-chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-col_b = chroma_client.get_collection(name=COLLECTION_NAME)
+# 为什么懒：chromadb 的 import + 建客户端实测约 1.0 秒（2026-10-19）；而它只有 search_notes
+#           真被调用时才用得上 —— 用不到就不该付。
+# 什么时候别懒：常驻服务要"启动时一次付清"，不能把 1 秒甩给第一个问 RAG 的用户
+#           → 所以 warmup() 里显式预热它。**懒加载 ≠ 不预热**。
+_chroma_client = None
+_col_b = None
+
+
+def get_col():
+    """第一次真的要检索时才建向量库客户端（warmup 会主动触发它）。"""
+    global _chroma_client, _col_b
+    if _col_b is None:
+        import chromadb
+        _chroma_client = chromadb.PersistentClient(
+            path=CHROMA_DIR,
+            settings=chromadb.Settings(anonymized_telemetry=False),   # 顺手关遥测
+        )
+        _col_b = _chroma_client.get_collection(name=COLLECTION_NAME)
+    return _col_b
 
 # ================= 4 个工具函数 =================
 
 def search_notes(question: str) -> str: # 把问题转换成向量数据，然后取第一个数据的向量
     """根据用户提出的问题检索高中数学笔记，返回最相关的片段和来源小节。用户询问高中数学知识时调用。"""
     qv = embed_client.embeddings.create(model="embedding-3", input=[question]).data[0].embedding
-    result= col_b.query(query_embeddings=[qv], n_results=3)  # 问题向量与chunk向量对比相似度，取n_result个结果
+    result= get_col().query(query_embeddings=[qv], n_results=3)  # 问题向量与chunk向量对比相似度，取n_result个结果
     docs, meta = result["documents"][0], result["metadatas"][0]
     result = ""
     for i, (doc,source_meta) in enumerate(zip(docs,meta)):
@@ -276,6 +293,12 @@ async def warmup():
     t0 = time.monotonic()
     await _get_graph()
     print(f"[预热] 图已装配（{(time.monotonic() - t0) * 1000:.0f} ms）；顺带握手缓存/限流（连不上会自动降级）")
+    # 🔴 懒加载 ≠ 不预热：常驻服务在这里把向量库也付掉，别让第一个用户吃那 1 秒
+    try:
+        get_col()
+        print("[预热] 向量库已就绪")
+    except Exception as e:
+        print(f"[预热] 向量库未就绪（不影响启动，但 RAG 类问题会报错）：{type(e).__name__}: {e}")
     try:
         cache.default().get("s8:warmup:miss")      # 只握手：命中与否无所谓
         if ratelimit.enabled():
@@ -550,5 +573,5 @@ async def structured_answer(question: str):
     return None
 # ================= 自测（改造 D） =================
 if __name__ == "__main__":
-    print("自检：", col_b.name, col_b.count())          # 期望：math_note_V7 59
+    print("自检：", get_col().name, get_col().count())          # 期望：math_note_V7 59
     print(asyncio.run(graph_answer("t1","奇变偶不变是什么口诀？")))

@@ -79,6 +79,12 @@ async def show_threads():
     print("== 进程内线程（daemon=False 且 alive=True = 退出噪音的嫌疑犯）==")
     for t in threading.enumerate():
         print(f"  daemon={t.daemon}  alive={t.is_alive()}  name={t.name}")
+    print("== join 2s 测试（alive_after_2s=True = 退出噪音元凶）==")
+    for t in threading.enumerate():
+        if t is threading.current_thread() or t.daemon:
+            continue
+        t.join(2.0)
+        print(f"  JOIN {t.name}: alive_after_2s={t.is_alive()}")
 
 
 async def main():
