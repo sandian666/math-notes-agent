@@ -1,5 +1,5 @@
 # ===== S5 / agent.py =====
-import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs, cache, re
+import asyncio, os, time, datetime, chromadb, requests, quota_db, aiosqlite, obs, cache, ratelimit, re
 from openai import OpenAI
 from typing import Annotated, Literal, TypedDict
 from pydantic import BaseModel, Field
@@ -21,7 +21,8 @@ CHROMA_DIR      = os.path.join(BASE_DIR, "chroma_db")                  # ← 跟
 with open(COLLECTION_FILE,encoding="utf-8") as f:
     COLLECTION_NAME=f.read().strip()
 
-_answer_cache = {}
+_answer_cache = {}   # ⚠️ 批④ 4-1b 起【完全退役】：键里没有历史指纹（脏读），且不认 S8_RESULT_CACHE 开关。
+                     #    结果缓存统一走 cache.py（两级 + 开关 + 降级）；这个变量留着只为不惊动别处引用。
 
 # 本轮里发生过的"重试 / 超时"记录（结构化日志与评测要用；graph_answer 每轮开头清空）
 RETRY_LOG = []
@@ -235,17 +236,52 @@ _CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessi
 _graph_mem = None      # 装配好的"带记忆的图"
 _saver = None          # 留个引用，别被垃圾回收
 _conn = None           # 新增：留个引用，关停时要用它 close()
+_graph_lock = None     # 🔴 懒加载锁：并发下没它，N 个协程会各建一份图（惊群，2026-10-19 实测 6 份）
+
+
+def _lock():
+    """锁要跟当前事件循环绑定，所以懒建（和 saver 同样的理由）。"""
+    global _graph_lock
+    if _graph_lock is None:
+        _graph_lock = asyncio.Lock()
+    return _graph_lock
+
 
 async def _get_graph():
     global _graph_mem, _saver, _conn   # 🔴 _conn 必须在这里：漏了它，下面的赋值就变成局部变量，
                                        #    模块级 _conn 永远是 None → shutdown_graph() 静默不干活
-    if _graph_mem is None:  # 第一次调用时：_graph_mem is None条件成立，于是执行初始化，连接数据库
+    # 🔴 双重检查锁：懒加载【不是】并发安全的 —— "检查"和"创建"之间有窗口，
+    #    N 个协程会同时判定"还没建"→ 各建一份（各自连库 + setup）。请求级 p95 看不见它，墙钟看得见。
+    if _graph_mem is not None:      # ① 快路径：绝大多数请求走这里，完全不碰锁
+        return _graph_mem
+    async with _lock():             # ② 慢路径：只有头几个请求会走到
+        if _graph_mem is not None:  # ③ 再检查一次：等锁期间别人可能已经建好了
+            return _graph_mem
         _conn = await aiosqlite.connect(_CHECKPOINT_DB)
         _saver = AsyncSqliteSaver(_conn)        # 创建一个能把 LangGraph 状态保存到 SQLite 的异步存档器。
         await _saver.setup()     # 初始化 checkpoint 数据库表。它通常会创建 LangGraph 所需的表和索引。
         _graph_mem = _lc_builder.compile(checkpointer=_saver) # 编译图时，把 saver 挂载到图上，用 _saver 管理 checkpoint
         print(f"🧠 [记忆] checkpointer 就绪：{_CHECKPOINT_DB}")
     return _graph_mem
+
+
+async def warmup():
+    """🔴 批④ 收尾：启动预热 —— 把"首次初始化"的成本从【第一个用户】挪到【服务启动】。
+
+    为什么需要：依赖导入 + 建图 + 连 sqlite 合计约 6 秒（2026-10-19 实测；不 import agent 的
+    mock 模式只有 374ms）。谁先来谁付，而且并发来就是 N 份（惊群）。预热后第一个真实请求直接
+    走 _get_graph() 的快路径，不碰锁。
+    什么时候用：常驻服务（main.py 的 lifespan 里）。一次性脚本不必预热 —— 它本来就要付这一次。
+    """
+    t0 = time.monotonic()
+    await _get_graph()
+    print(f"[预热] 图已装配（{(time.monotonic() - t0) * 1000:.0f} ms）；顺带握手缓存/限流（连不上会自动降级）")
+    try:
+        cache.default().get("s8:warmup:miss")      # 只握手：命中与否无所谓
+        if ratelimit.enabled():
+            ratelimit.default().check("warmup")    # 用独立身份，不影响真实用户额度
+    except Exception as e:
+        print(f"[预热] 缓存/限流预握手失败（不影响启动）：{type(e).__name__}: {e}")
 
 
 async def shutdown_graph():
@@ -300,8 +336,10 @@ def _summarize_run(msgs):
     }
 
 
-async def graph_answer(session_id, question=None, resume=None, *, with_meta=False):
-    """question = 新问题；resume = 人工确认的答复（y/n）。两者二选一。"""
+async def graph_answer(session_id, question=None, resume=None, *, with_meta=False, user_id=None):
+    """question = 新问题；resume = 人工确认的答复（y/n）。两者二选一。
+    user_id = 【限流维度】。🔴 必须传"会重复的那个身份"（登录用户 / API Key），
+              不能拿 session_id 当身份 —— 每次新会话 = 每次全新额度 = 等于没限流（2026-10-19 实测）。"""
     graph = await _get_graph()   # 执行函数后，graph是已经连接 SQLite 记忆功能的 LangGraph
     # 创建本次运行的配置，🔴 thread_id = 我们的 session_id，checkpointer 靠它区分"谁的历史"
     cfg = {"configurable": {"thread_id": session_id}}
@@ -313,7 +351,8 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
     #    历史聊到第几轮变了，键就变 —— 不会拿旧答案冒充新答案。
     #    resume（人工确认的答复）绝不走缓存：那必须真的把图续跑起来。
     ck = None
-    if resume is None and question:
+    # 🔴 结果缓存默认【关】：命中会跳过工具执行与 checkpoint 写入，篡改足迹判据与多轮上下文。
+    if cache.enabled() and resume is None and question:
         ck = cache.make_key(question, session_id, n_before)
         hit_text, where = cache.default().get(ck)
         if hit_text is not None:
@@ -323,6 +362,23 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
             obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
                           text=hit_text, cache_hit=True, **meta)
             return (hit_text, meta) if with_meta else hit_text
+    # 🔴 批④ 4-3：限流闸门（Redis 固定窗口；Redis 挂了自动降级为进程内窗口）。
+    #    超限返回【人话】、绝不抛异常 —— 抛异常会让客户端疯重试，比不限流更糟。
+    if ratelimit.enabled() and resume is None and question:
+        # 🔴 限流按【稳定身份】计数：单机/单用户默认 "local"，Web 层应传登录用户或 API Key。
+        uid = user_id or os.getenv("S8_RATE_UID", "local")
+        ok, remaining, retry_after, rl_mode = ratelimit.default().check(uid)
+        if not ok:
+            rl = ratelimit.default()
+            text = (f"你问得太快了，请等 {retry_after} 秒再试。"
+                    f"（限额：{rl.limit} 次 / {rl.window} 秒）")
+            meta = {"usage": {"input": 0, "output": 0, "total": 0}, "tools": [], "n_tool_calls": 0,
+                    "retries": [], "timeout": False, "interrupt": False, "latency_ms": 0,
+                    "cache_where": None, "cache_mode": cache.default().mode,
+                    "rate_limited": True, "rate_mode": rl_mode, "rate_retry_after": retry_after}
+            obs.log_event(kind="answer", session_id=session_id, question=question, resume=resume,
+                          text=text, cache_hit=False, **meta)
+            return (text, meta) if with_meta else text
     RETRY_LOG.clear()            # 本轮的重试记录从零开始数
     payload = Command(resume=resume) if resume is not None else {"messages": [HumanMessage(question)]}
     t0 = time.monotonic()
@@ -379,8 +435,11 @@ ERR_TAG = "[[ERR]]"
 
 async def stream_answer(session_id, question):
     """图版流式：把 while True 换成 agent_graph.astream"""
-    cache_key = (session_id, question)
-    text_buf = ""          # 攒这一轮的正文（用来存缓存 + 写 qa_log）
+    # 🔴 批④ 4-1b：旧的 `cache_key = (session_id, question)` 缓存已【退役】——
+    #    它的键里没有历史指纹，同会话同问第二次会端出旧答案（脏读）。
+    #    流式通道暂不做结果缓存：它的"完整性"和"有副作用"难以判定，
+    #    🔴 不确定能否正确失效时，宁可不写缓存。要加就统一走 cache.py 的正确键（待办）。
+    text_buf = ""          # 攒这一轮的正文（用来写 qa_log）
     n_text = 0
     stream_ok = False      # 只有"整段跑完"才允许写缓存 / 记账
     refs = []              # 本轮检索命中的笔记小节（去重，最多给前端 3 个）
@@ -390,14 +449,7 @@ async def stream_answer(session_id, question):
     #    浏览器只收到"200 + 空流"，用户看到"没有收到回答"，控制台也难定位。
     #    现在：任何依赖问题都给用户一句人话，技术细节留在控制台。
     try:
-        if cache_key in _answer_cache:                       # ① 白送
-            obs.log_event(kind="answer", session_id=session_id, question=question,
-                          text=_answer_cache[cache_key], cache_hit=True, latency_ms=0,
-                          usage={"input": 0, "output": 0, "total": 0}, tools=[],
-                          n_tool_calls=0, retries=[], timeout=False, interrupt=False)
-            yield f"data: {_answer_cache[cache_key]}\n\n"
-            return
-        if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ② 拦
+        if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ① 拦
             yield "data: 今天额度已用完，明天再来吧\n\n"
             return
 
@@ -435,7 +487,7 @@ async def stream_answer(session_id, question):
             yield f"data: {ERR_TAG}服务暂时不可用，请稍后再试一次\n\n"
 
     if text_buf and stream_ok:                               # ④ 整段答成才记账
-        _answer_cache[cache_key] = text_buf
+        # 4-1b：这里原来还会写 _answer_cache（旧键，已退役）；流式通道不再做结果缓存。
         try:
             await quota_db.count_one(question, text_buf)
         except Exception as e:

@@ -7,7 +7,7 @@
  2) 有副作用（写类工具）或停在人工确认的轮次，绝不写缓存（那等于"下次不再真的执行"）。
  3) Redis 是加速器，不是依赖：所有调用 try/except + 硬超时；连不上就退化成纯内存，服务照答。
 """
-import hashlib, os, threading, unicodedata
+import hashlib, os, threading, time, unicodedata
 from collections import OrderedDict
 
 try:
@@ -24,7 +24,19 @@ REDIS_URL       = os.getenv("S8_REDIS_URL", "redis://127.0.0.1:6379/0")  # Redis
 TTL_SECONDS     = 3600      # 实验：改成 5 → Redis 那层 5 秒后就过期
 L1_MAX          = 256       # 内存层最多存几条（防内存泄漏）
 SOCKET_TIMEOUT  = 0.3       # 🔴 降级不死的命门：Redis 是黑洞时，最坏只等 0.3 秒
-RECONNECT_EVERY = 20        # 降级后每 N 次调用试着重连一次（自愈）
+RECONNECT_AFTER_SECONDS = 5.0  # 降级后每 5 秒试着重连一次（自愈）—— 按【时间】比按【次数】更贴合"依赖随时可能回来"
+
+
+def enabled():
+    """🔴 结果缓存开关：安全默认 = 关（读环境变量 S8_RESULT_CACHE，每次现读，避免"导入时快照"的坑）。
+
+    为什么默认关：结果缓存命中的时候，跳过的不只是模型调用，还有【工具执行】和【checkpoint 状态写入】。
+      · 足迹类判据（调了哪个工具 / 重试几次）→ 命中即判失败（2026-10-19 实测：tool-08/09）
+      · 多轮上下文 → 命中即断（实测：mt-05 答"没看到您上一条提到的数字"）
+    什么时候开：过程无人关心的通道 —— 纯问答 / 演示 / 并发压测。
+    什么时候必须关：评测、回归、审计、计费、多轮会话。
+    """
+    return os.getenv("S8_RESULT_CACHE", "0") == "1"
 
 
 def _say(msg):
@@ -61,18 +73,16 @@ class TwoLevelCache:
         self._lock = threading.Lock() # 创建线程锁。
         self._c = None                # Redis 客户端；None = 还没连 / 连不上
         self.mode = "unprobed"    # 当前缓存模式：unprobed（未连接） → redis / memory-only（只使用内存）
-        self._ops = 0             # 当前缓存模式
-        self._retry_at = 0        # 记录下一次允许尝试 Redis 的操作次数
+        self._retry_at = 0.0      # 下次允许重连的时刻（time.monotonic 的秒数，不是次数）
 
     # ---------------- 第二级：Redis（每个动作都兜异常） ----------------
     def _client(self):
-        self._ops += 1
         if self._c is not None:
             return self._c
         if _redis is None:
             self._degrade("没装 redis 库（pip install redis）")
             return None
-        if self._ops < self._retry_at:          # 降级期间不每次都白等 0.3 秒，隔 N 次再试
+        if time.monotonic() < self._retry_at:   # 降级期间别每次都白等 0.3 秒，隔几秒探一次
             return None
         try:
             # 🔴 光设 socket_timeout 不够：redis-py 默认还有【内部重试 + 退避】，
@@ -84,7 +94,7 @@ class TwoLevelCache:
             c.ping()
         except Exception as e:
             self._degrade(f"{type(e).__name__}: {e}")
-            self._retry_at = self._ops + RECONNECT_EVERY   # 记录下一次重连时机。
+            self._retry_at = time.monotonic() + RECONNECT_AFTER_SECONDS   # 隔 5 秒再试着重连
             return None
         self._c = c
         if self.mode != "redis":  # 只在以下情况打印：第一次连接成功/Redis 从故障中恢复
@@ -123,8 +133,8 @@ class TwoLevelCache:
             return None, None
         with self._lock:                         # 命中 Redis 就回填内存层（下次更快）
             self._l1[key] = raw
-            self._l1.move_to_end(key)
-            self._trim()
+            self._l1.move_to_end(key)      # 把这个 key 移动到 OrderedDict 的末尾，表示最近刚访问过
+            self._trim()         # 检查内存缓存是否超过最大数量。
         return raw, "redis"
 
     def set(self, key, value, ttl=TTL_SECONDS):

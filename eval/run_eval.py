@@ -18,6 +18,12 @@ run_eval.py —— 批③ 评测跑分器：一条命令出一份报告。
   3. 故障注入：把某个工具临时换成"慢桩 / 报错桩"，让"超时 / 重试"变成
      【可复现】的实验，而不是"等哪天网络自己挂掉"。
 """
+import os
+# 🔴 批④ 4-1c：评测自己保证环境干净 —— 结果缓存会跳过工具执行与 checkpoint 写入，
+#    篡改足迹判据（工具/重试）与多轮上下文（实测 tool-08/09、mt-04/05 因此误判）。
+#    放在 import agent 之前，一律强制关，不信任外部 shell 里设了什么。
+os.environ["S8_RESULT_CACHE"] = "0"
+
 import argparse
 import asyncio
 import json

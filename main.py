@@ -163,6 +163,8 @@ async def _startup_selfcheck():
 @asynccontextmanager
 async def app_lifespan(app):
     await _startup_selfcheck()              # 启动先把依赖状态打出来（fail fast）
+    await agent.warmup()                    # 🔴 批④ 收尾：预建图 + 预握手缓存/限流，
+                                            #    别让"第一个用户"背 6 秒冷启动税（并发来还会变成 N 份）
     tools = await mcp_bridge.startup()      # 启动：连 MCP，拿工具
     agent.add_mcp_tools(tools)              # 并进图里那张工具表
     yield  # lifespan() 暂停，并把控制权交还给 FastAPI，当停止 FastAPI 服务时，程序会继续执行 yield 后面的代码
