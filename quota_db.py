@@ -12,7 +12,7 @@ DB = {
     "charset": "utf8mb4",
 }
 
-DAILY_LIMIT = 3          # 每天最多答 3 次  ← 额度只在这一个地方改（压测完改回 3）
+DAILY_LIMIT = 3          # 每人每天最多答 3 次
 
 _pool = None             # 全局唯一的池子
 
@@ -26,27 +26,27 @@ async def get_pool():
 def today_str():
     return date.today().strftime("%Y-%m-%d")
 
-async def used_today():
+async def used_today(user_key: str = ""):
     pool = await get_pool()
-    async with pool.acquire() as conn:                 # 借
-        async with conn.cursor() as cur:               # 借手
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT used FROM daily_quota WHERE quota_date = %s", (today_str(),)
+                "SELECT used FROM daily_quota WHERE user_key = %s AND quota_date = %s",
+                (user_key, today_str()),
             )
             row = await cur.fetchone()
-            return row[0] if row else 0                # 空当 0
-                                                   # async with 结束 = 自动还回池子
+            return row[0] if row else 0
 
-async def count_one(question, answer):
+async def count_one(user_key: str, question, answer):
     """记一次账：日报数 +1 + 写 qa_log（两条 INSERT 一次 commit）"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO daily_quota (quota_date, used) VALUES (%s, 1) "
+                    "INSERT INTO daily_quota (user_key, quota_date, used) VALUES (%s, %s, 1) "
                     "ON DUPLICATE KEY UPDATE used = used + 1",
-                    (today_str(),),
+                    (user_key, today_str()),
                 )
                 await cur.execute(
                     "INSERT INTO qa_log (question, answer) VALUES (%s, %s)",
@@ -59,7 +59,7 @@ async def count_one(question, answer):
 
 # ===== 自测 + 验库（单跑本文件时用）=====
 async def _selftest():
-    print("今日已用 =", await used_today(), "/", DAILY_LIMIT)
+    print("今日已用 =", await used_today(""), "/", DAILY_LIMIT)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:

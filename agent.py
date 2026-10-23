@@ -56,13 +56,15 @@ def get_col():
 # ================= 4 个工具函数 =================
 
 def search_notes(question: str) -> str: # 把问题转换成向量数据，然后取第一个数据的向量
-    """根据用户提出的问题检索高中数学笔记，返回最相关的片段和来源小节。用户询问高中数学知识时调用。"""
+    """根据用户提出的问题检索大学数学知识库（高等数学、线性代数、概率论与数理统计，含考研考点），
+    返回最相关的片段和来源章节。用户询问数学概念、定理、公式、例题时调用。"""
     qv = embed_client.embeddings.create(model="embedding-3", input=[question]).data[0].embedding
     result= get_col().query(query_embeddings=[qv], n_results=3)  # 问题向量与chunk向量对比相似度，取n_result个结果
     docs, meta = result["documents"][0], result["metadatas"][0]
     result = ""
     for i, (doc,source_meta) in enumerate(zip(docs,meta)):
-        result += f"【片段{i + 1}】（来源：{source_meta['小节']}）\n{doc}\n\n"
+        src = source_meta.get("章节") or source_meta.get("小节", "")
+        result += f"【片段{i + 1}】（来源：{src}）\n{doc}\n\n"
     return result
 
 
@@ -428,7 +430,7 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
         meta["interrupt"] = False
         text = out["messages"][-1].content
     return_text = (text, meta) if with_meta else text
-    # 🔴 批④ 4-1：写缓存，两道闸门（有写类工具 / 停在人工确认 → 绝不写）。
+    # 写缓存，两道闸门（有写类工具 / 停在人工确认 → 绝不写）。
     tools_used = meta.get("tools") or []
     if ck and not meta["interrupt"] and not any(t in DANGEROUS_TOOLS for t in tools_used):
         cache.default().set(ck, text)
@@ -439,13 +441,13 @@ async def graph_answer(session_id, question=None, resume=None, *, with_meta=Fals
     return return_text
 
 
-async def answer_cached(session_id, question):
+async def answer_cached(session_id, question, user_key=""):
     # 批④ 4-1：这里原来那套 _answer_cache（键 = session_id + question，键里没有历史）已撤掉 ——
     #    缓存统一由 graph_answer 走 cache.py 两级缓存；一个系统只留一层缓存逻辑。
-    if await quota_db.used_today() >= quota_db.DAILY_LIMIT:     # ① 查账本：满了就拦
+    if await quota_db.used_today(user_key) >= quota_db.DAILY_LIMIT:  # ① 查账本：满了就拦
         return "今天额度已用完，明天再来吧"
     result = await graph_answer(session_id, question)           # ② 放行才答题（命中缓存时图里直接返回）
-    await quota_db.count_one(question, result)                  # ③ 记账
+    await quota_db.count_one(user_key, question, result)        # ③ 记账
     return result
 
 
@@ -456,7 +458,7 @@ async def answer_cached(session_id, question):
 REF_TAG = "[[REF]]"
 ERR_TAG = "[[ERR]]"
 
-async def stream_answer(session_id, question):
+async def stream_answer(session_id, question,user_key=""):
     """图版流式：把 while True 换成 agent_graph.astream"""
     # 🔴 批④ 4-1b：旧的 `cache_key = (session_id, question)` 缓存已【退役】——
     #    它的键里没有历史指纹，同会话同问第二次会端出旧答案（脏读）。
@@ -472,7 +474,7 @@ async def stream_answer(session_id, question):
     #    浏览器只收到"200 + 空流"，用户看到"没有收到回答"，控制台也难定位。
     #    现在：任何依赖问题都给用户一句人话，技术细节留在控制台。
     try:
-        if await quota_db.used_today() >= quota_db.DAILY_LIMIT:   # ① 拦
+        if await quota_db.used_today(user_key) >= quota_db.DAILY_LIMIT:   # ① 拦
             yield "data: 今天额度已用完，明天再来吧\n\n"
             return
 
@@ -512,7 +514,7 @@ async def stream_answer(session_id, question):
     if text_buf and stream_ok:                               # ④ 整段答成才记账
         # 4-1b：这里原来还会写 _answer_cache（旧键，已退役）；流式通道不再做结果缓存。
         try:
-            await quota_db.count_one(question, text_buf)
+            await quota_db.count_one(user_key,question, text_buf)
         except Exception as e:
             # 记账失败不该把"已经答完的内容"搞脏，更不该让用户看到报错
             print("❌ [额度] 记账失败（本次回答不受影响）：", repr(e))

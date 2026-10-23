@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>数学笔记助手 · 高中数学笔记问答</title>
+<title>数学知识库助手 · 高数 / 线代 / 概率问答</title>
 
 <!--
   ===== 分层交付 =====
@@ -85,6 +85,8 @@ body{
   -webkit-font-smoothing:antialiased; overflow:hidden;
 }
 .bg{position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden}
+.scene{position:absolute; inset:0; width:100%; height:100%; color:var(--accent); opacity:.16}
+@media (prefers-color-scheme: dark){ .scene{opacity:.22} }
 .mesh{
   position:absolute; inset:-25%;
   background:
@@ -123,7 +125,7 @@ body{
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes stream{from{background-position:0% 0}to{background-position:260% 0}}
 
-.app{position:relative; z-index:1; height:100%; display:grid; grid-template-columns:296px 1fr}
+.app{position:relative; z-index:1; height:100vh; height:100dvh; display:grid; grid-template-columns:296px 1fr; grid-template-rows:minmax(0,1fr)}
 
 /* =========================================================
    3. 左栏
@@ -275,7 +277,7 @@ body{
 /* =========================================================
    4. 右栏
    ========================================================= */
-.chat{display:flex; flex-direction:column; min-width:0; height:100%; position:relative}
+.chat{display:flex; flex-direction:column; min-width:0; min-height:0; height:100%; position:relative}
 .topbar{
   position:relative; display:flex; align-items:center; gap:12px; padding:13px 22px;
   background:var(--panel); backdrop-filter:blur(20px);
@@ -288,13 +290,17 @@ body{
 .topbar h2{margin:0; font-size:14.5px}
 #tipLine{display:block; margin-top:3px; font-size:11.5px; color:var(--muted); transition:opacity .22s ease}
 .topbar .spacer{flex:1}
+.home-btn{padding:0 12px; height:34px; font-size:12.5px; flex:0 0 auto}
+.home-btn span{margin-left:5px}
+.brand{cursor:pointer}
+@media (max-width:680px){ .home-btn span{display:none} }
 .live{
   display:inline-flex; align-items:center; gap:7px; font-size:11.5px; color:var(--text-soft);
   border:1px solid var(--line); border-radius:999px; padding:5px 12px; background:var(--card); box-shadow:var(--e1);
 }
 .live i{width:7px; height:7px; border-radius:50%; background:var(--ok); animation:pulse 2.4s ease-out infinite}
 
-.thread{flex:1; overflow-y:auto; padding:26px 22px 8px}
+.thread{flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:26px 22px 8px}
 .wrap{max-width:840px; margin:0 auto; display:flex; flex-direction:column; gap:22px; position:relative}
 .wrap.has-msgs::before{
   content:""; position:absolute; left:17.5px; top:8px; bottom:8px; width:1px;
@@ -304,16 +310,23 @@ body{
 /* —— 首屏 */
 .hero{text-align:center; padding:26px 0 6px; animation:rise .34s ease both}
 .hero .mark{
-  width:60px; height:60px; margin:0 auto 18px; border-radius:20px; font-size:30px; color:#fff;
-  background:linear-gradient(135deg,#4f46e5,#7c3aed 50%,#0891b2); border:none; box-shadow:var(--e3);
+  width:64px; height:64px; margin:0 auto 16px; border-radius:22px; overflow:hidden;
+  box-shadow:0 10px 26px -12px rgba(99,102,241,.6), 0 0 0 1px var(--line);
 }
+.hero .mark svg{width:100%; height:100%; display:block}
 .hero .eyebrow{justify-content:center}
 .hero h2{
   margin:12px 0 0; font-size:26px; letter-spacing:-.6px; line-height:1.3;
   background:linear-gradient(100deg,var(--text),var(--accent) 58%,var(--accent-2));
   -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
 }
-.starters{display:grid; grid-template-columns:1fr 1fr; gap:11px; max-width:672px; margin:26px auto 0; text-align:left}
+.starters-label{
+  max-width:672px; margin:28px auto 9px; display:flex; align-items:center; gap:10px;
+  text-align:left; font-size:11px; letter-spacing:.14em; color:var(--muted);
+}
+.starters-label em{font-style:normal; letter-spacing:.04em; font-size:11.5px; color:var(--text-soft)}
+.starters-label::after{content:""; flex:1; height:1px; background:var(--line)}
+.starters{display:grid; grid-template-columns:1fr 1fr; gap:11px; max-width:672px; margin:0 auto; text-align:left}
 .starter{
   font:inherit; cursor:pointer; padding:14px; border-radius:var(--r-m); text-align:left;
   border:1px solid var(--line); box-shadow:var(--e1); transition:.2s;
@@ -331,11 +344,11 @@ body{
 @keyframes rise{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:none}}
 .avatar{
   width:36px; height:36px; flex:0 0 36px; border-radius:13px; display:grid; place-items:center;
-  font-size:12.5px; font-weight:800; color:#fff; position:relative; z-index:1;
-  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  overflow:hidden; position:relative; z-index:1;
   box-shadow:0 0 0 2px var(--card), 0 0 0 3.5px var(--accent-soft), var(--e2);
 }
-.row.user .avatar{background:linear-gradient(135deg,#64748b,#334155); box-shadow:0 0 0 2px var(--card), 0 0 0 3.5px var(--line), var(--e2)}
+.avatar svg{width:100%; height:100%; display:block}
+.row.user .avatar{box-shadow:0 0 0 2px var(--card), 0 0 0 3.5px var(--line), var(--e2)}
 .col{min-width:0; max-width:86%; display:flex; flex-direction:column; gap:6px}
 .row.user .col{align-items:flex-end}
 .who{font-size:11.5px; color:var(--muted); padding:0 3px}
@@ -502,6 +515,22 @@ kbd{
 <body>
 
 <div class="bg" aria-hidden="true">
+  <svg class="scene" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs>
+      <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+        <path d="M64 0H0V64" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/>
+      </pattern>
+    </defs>
+    <rect width="1600" height="900" fill="url(#grid)"/>
+    <path d="M0 620 C160 560 260 760 420 660 S700 420 860 560 S1160 760 1320 600 S1520 380 1600 470"
+          fill="none" stroke="currentColor" stroke-width="3" opacity=".8"/>
+    <g fill="currentColor" opacity=".5">
+      <circle cx="420" cy="660" r="6"/><circle cx="860" cy="560" r="6"/><circle cx="1320" cy="600" r="6"/>
+    </g>
+    <text x="1150" y="320" font-size="260" font-family="Georgia,serif" fill="currentColor" opacity=".16">∫</text>
+    <text x="110" y="250" font-size="120" font-family="Georgia,serif" fill="currentColor" opacity=".13">∑</text>
+    <text x="620" y="830" font-size="88" font-family="Georgia,serif" fill="currentColor" opacity=".11">lim</text>
+  </svg>
   <div class="mesh"></div>
   <div class="sheen"></div>
   <div class="stream"></div>
@@ -517,7 +546,7 @@ kbd{
         <div class="mark">∑</div>
         <div>
           <h1>数学笔记助手</h1>
-          <p>高中数学 · 随手就问</p>
+          <p>高数 · 线代 · 概率 · 随问随答</p>
         </div>
       </div>
     </div>
@@ -560,6 +589,7 @@ kbd{
   <main class="chat">
     <header class="topbar">
       <button class="btn bare menu-btn" id="menuBtn" aria-label="打开侧栏">☰</button>
+      <button class="btn bare home-btn" id="homeBtn" title="回到首页，新开一个对话">⌂<span>首页</span></button>
       <div>
         <h2>数学笔记助手</h2>
         <span id="tipLine">问得越具体，答得越清楚</span>
@@ -571,29 +601,40 @@ kbd{
     <div class="thread" id="thread" aria-live="polite">
       <div class="wrap" id="wrap">
         <div class="hero" id="hero">
-          <div class="mark">∑</div>
-          <em class="eyebrow">高中数学 · 笔记问答</em>
-          <h2>有不懂的，问一句就行</h2>
+          <div class="mark">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <rect width="40" height="40" fill="#ede9fe"/>
+              <path d="M20 9v3.4" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
+              <circle cx="20" cy="7.2" r="2.2" fill="#f59e0b"/>
+              <rect x="9" y="12" width="22" height="18" rx="6" fill="#7c3aed"/>
+              <circle cx="15.5" cy="20" r="3" fill="#fff"/><circle cx="24.5" cy="20" r="3" fill="#fff"/>
+              <circle cx="15.5" cy="20" r="1.4" fill="#1e1b4b"/><circle cx="24.5" cy="20" r="1.4" fill="#1e1b4b"/>
+              <path d="M16.5 25.4c1.9 1.7 5.1 1.7 7 0" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <em class="eyebrow">2027 · 数学知识库</em>
+          <h2>算不明白的，都算我的。</h2>
+          <p class="starters-label"><em>示例问题</em></p>
           <div class="starters">
-            <button class="starter c-indigo" data-ask="诱导公式那个“奇变偶不变”口诀到底啥意思？">
-              <span class="top"><span class="glyph">π</span><em class="topic">三角函数</em></span>
-              <b>诱导公式的口诀，到底在说什么？</b>
-              <span class="sub">“奇变偶不变，符号看象限”怎么用</span>
+            <button class="starter c-indigo" data-ask="洛必达法则什么时候不能用？">
+              <span class="top"><span class="glyph">lim</span><em class="topic">高数 · 极限</em></span>
+              <b>洛必达法则，什么时候会失效？</b>
+              <span class="sub">不是所有 0/0 都能上下求导</span>
             </button>
-            <button class="starter c-cyan" data-ask="导数为零的点为什么不一定就是极值点？">
-              <span class="top"><span class="glyph">∂</span><em class="topic">导数</em></span>
-              <b>导数为零的点，一定是极值点吗？</b>
-              <span class="sub">答案是“不一定”，看那个反例就明白了</span>
+            <button class="starter c-cyan" data-ask="矩阵可对角化的充要条件是什么？">
+              <span class="top"><span class="glyph">λ</span><em class="topic">线代 · 特征值</em></span>
+              <b>矩阵什么时候能对角化？</b>
+              <span class="sub">重数对不上，就化不了</span>
             </button>
-            <button class="starter c-emerald" data-ask="等比数列求和最容易漏掉哪种情况？">
-              <span class="top"><span class="glyph">aₙ</span><em class="topic">数列</em></span>
-              <b>等比数列求和，最容易漏掉哪种情况？</b>
-              <span class="sub">漏一步就扣分，这里最容易翻车</span>
+            <button class="starter c-emerald" data-ask="全概率公式和贝叶斯公式有什么区别？">
+              <span class="top"><span class="glyph">P</span><em class="topic">概率 · 条件概率</em></span>
+              <b>全概率和贝叶斯，差在哪？</b>
+              <span class="sub">一个由因推果，一个由果推因</span>
             </button>
-            <button class="starter c-rose" data-ask="样本方差的分母为什么是 n 减一？">
-              <span class="top"><span class="glyph">σ</span><em class="topic">概率统计</em></span>
-              <b>样本方差的分母，为什么是 n 减一？</b>
-              <span class="sub">不是写错，是有原因的</span>
+            <button class="starter c-rose" data-ask="椭圆的离心率和 a、b、c 是什么关系？">
+              <span class="top"><span class="glyph">e</span><em class="topic">高中 · 解析几何</em></span>
+              <b>离心率，到底在描述什么？</b>
+              <span class="sub">a、b、c 三者的关系一次理清</span>
             </button>
           </div>
         </div>
@@ -604,7 +645,7 @@ kbd{
 
     <div class="composer">
       <div class="composer-inner">
-        <textarea id="q" rows="1" placeholder="输入问题，例如：诱导公式的口诀是什么？"></textarea>
+        <textarea id="q" rows="1" placeholder="输入问题，例如：洛必达法则什么时候不能用？"></textarea>
         <button class="send" id="go" aria-label="发送">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 12h15M13 6l6 6-6 6"/>
@@ -614,7 +655,7 @@ kbd{
       </div>
       <div class="hint">
         <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · <kbd>Esc</kbd> 停止</span>
-        <span class="tip">内容依据笔记整理，仅供参考</span>
+        <span class="tip">内容依据考纲与公开教材整理，仅供参考</span>
       </div>
     </div>
   </main>
@@ -635,7 +676,7 @@ const thread = $("thread"), wrap = $("wrap");
 const state = { busy: false, ctrl: null, msgs: [], sid: "" };
 
 /* 后端在流末尾 / 出错时会推"带标记的帧"：它不是正文，而是元数据。
-     [[REF]]小节A|小节B   → 回答末尾那行"依据笔记：…"
+     [[REF]]章节A|章节B   → 回答末尾那行"依据知识库：…"
      [[ERR]]一句话        → 错误气泡 + 重试按钮
    ⚠️ 两个标记必须和后端 agent.py 里的 REF_TAG / ERR_TAG 保持一致。
    🔴 为什么要先拼整帧再判断：前端只会收到一串文本，不靠标记就分不清"这是答案"还是"这是错误"。 */
@@ -800,11 +841,31 @@ function renderAll(){
   else state.msgs.forEach((m, i) => wrap.appendChild(rowNode(m, i)));   // 带上下标：重试要知道"这一条对应哪个提问"
   updateStats(); scrollBottom(true);
 }
+const AVATAR = {
+  user: `<svg viewBox="0 0 40 40" aria-hidden="true">
+    <rect width="40" height="40" rx="13" fill="#dbeafe"/>
+    <circle cx="20" cy="17" r="8" fill="#f6d5b8"/>
+    <path d="M12 16c0-5 3.6-8 8-8s8 3 8 8c-2.2-2.6-4.8-3.6-8-3.6S14.2 13.4 12 16z" fill="#2f2a3a"/>
+    <circle cx="16.6" cy="17.4" r="1.15" fill="#2f2a3a"/>
+    <circle cx="23.4" cy="17.4" r="1.15" fill="#2f2a3a"/>
+    <path d="M17.4 21.4c1.5 1.3 3.7 1.3 5.2 0" stroke="#c2683f" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+    <path d="M10.5 34c1.2-5.4 4.9-7.6 9.5-7.6s8.3 2.2 9.5 7.6z" fill="#6366f1"/>
+  </svg>`,
+  bot: `<svg viewBox="0 0 40 40" aria-hidden="true">
+    <rect width="40" height="40" rx="13" fill="#ede9fe"/>
+    <path d="M20 9v3.4" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="20" cy="7.2" r="2.2" fill="#f59e0b"/>
+    <rect x="9" y="12" width="22" height="18" rx="6" fill="#7c3aed"/>
+    <circle cx="15.5" cy="20" r="3" fill="#fff"/><circle cx="24.5" cy="20" r="3" fill="#fff"/>
+    <circle cx="15.5" cy="20" r="1.4" fill="#1e1b4b"/><circle cx="24.5" cy="20" r="1.4" fill="#1e1b4b"/>
+    <path d="M16.5 25.4c1.9 1.7 5.1 1.7 7 0" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  </svg>`
+};
 function rowNode(m, idx){
   const row = document.createElement("div");
   row.className = "row " + (m.role === "user" ? "user" : "bot") + (m.err ? " err" : "");
   const av = document.createElement("div");
-  av.className = "avatar"; av.textContent = m.role === "user" ? "我" : "∑";
+  av.className = "avatar"; av.innerHTML = AVATAR[m.role === "user" ? "user" : "bot"];
 
   const col = document.createElement("div"); col.className = "col";
   const who = document.createElement("div"); who.className = "who";
@@ -833,7 +894,7 @@ function rowNode(m, idx){
   if (m.role !== "user" && m.refs && m.refs.length){   // 依据那行放在气泡外面、元信息上面，像脚注
     const rf = document.createElement("div");
     rf.className = "refs";
-    rf.textContent = "依据笔记：" + m.refs.join("、");
+    rf.textContent = "依据知识库：" + m.refs.join("、");
     col.appendChild(rf);
   }
   col.appendChild(meta);
@@ -897,7 +958,7 @@ async function ask(question){
 
   const node = document.createElement("div");       // 先放等待气泡（只有三点，不写内部过程）
   node.className = "row bot";
-  node.innerHTML = '<div class="avatar">∑</div><div class="col">'
+  node.innerHTML = '<div class="avatar">' + AVATAR.bot + '</div><div class="col">'
     + '<div class="who">数学笔记助手</div>'
     + '<div class="bubble"><span class="thinking"><i></i><i></i><i></i></span></div>'
     + '<div class="meta"><span>正在回答…</span></div></div>';
@@ -992,13 +1053,12 @@ async function ask(question){
 /* =========================================================
    6. 界面事件
    ========================================================= */
-/* 推荐提问：全部取自 rag_docs/检索测试题.md（那份文件里每题都标了"应命中哪一节"），
-   并逐条核到《高中数学核心知识笔记.md》原文。笔记里没有的（洛必达 / 矩阵 / 贝叶斯）一律不放。 */
+/* 推荐提问：跟着 math_note_v8 的章节走，每题都保证库里能检索到 */
 const EXAMPLES = [
-  { glyph:"ƒ",  topic:"函数",     q:"判断一个关系是不是函数，关键看什么？" },
-  { glyph:"≤",  topic:"不等式",   q:"用基本不等式求最值，为什么要检查等号能不能取到？" },
-  { glyph:"△",  topic:"立体几何", q:"二面角的三种做法分别是什么？" },
-  { glyph:"◎",  topic:"解析几何", q:"椭圆的 a、b、c 是什么关系？双曲线呢？" }
+  { glyph:"∫",  topic:"高数 · 积分",   q:"二重积分怎么交换积分次序？" },
+  { glyph:"λ",  topic:"线代 · 特征值", q:"正定二次型怎么判断？" },
+  { glyph:"P",  topic:"概率 · 估计",   q:"最大似然估计的步骤是什么？" },
+  { glyph:"aₙ", topic:"高中 · 数列",   q:"错位相减求和，怎么确定要乘什么？" }
 ];
 EXAMPLES.forEach(x => {
   const b = document.createElement("button");
@@ -1018,7 +1078,18 @@ wrap.addEventListener("click", (e) => {
 
 $("go").addEventListener("click", () => { const v = $("q").value; $("q").value = ""; autoGrow(); ask(v); });
 $("stop").addEventListener("click", () => state.ctrl && state.ctrl.abort());
-$("newChat").addEventListener("click", () => { persist(); setSid(newSid()); $("q").focus(); });
+/* 回到首页：把当前对话存进历史，然后开一个新的空对话（首屏那四张卡会回来） */
+function goHome(){
+  if (state.busy){ flash($("homeBtn"), "正在回答，先等一下"); return; }
+  persist();
+  setSid(newSid());
+  $("q").value = ""; autoGrow();
+  thread.scrollTop = 0;
+  $("q").focus();
+}
+$("newChat").addEventListener("click", goHome);
+$("homeBtn").addEventListener("click", goHome);
+document.querySelector(".brand").addEventListener("click", goHome);
 $("copySid").addEventListener("click", (e) => copyText(state.sid, e.currentTarget, "已复制"));
 $("themeBtn").addEventListener("click", () => { themeIdx = (themeIdx + 1) % THEMES.length; applyTheme(); });
 $("menuBtn").addEventListener("click", () => document.body.classList.toggle("nav-open"));
@@ -1035,8 +1106,8 @@ $("exportBtn").addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
 });
 function flash(btn, word){
-  const old = btn.textContent; btn.textContent = word;
-  setTimeout(() => btn.textContent = old, 1300);
+  const old = btn.innerHTML; btn.textContent = word;
+  setTimeout(() => btn.innerHTML = old, 1300);
 }
 
 const ta = $("q");
