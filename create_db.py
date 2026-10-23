@@ -11,7 +11,7 @@ DOCS_FILE = os.path.join(BASE_DIR, "rag_docs", "高中数学核心知识笔记.m
 CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 COLLECTION_FILE = os.path.join(BASE_DIR, "current_collection.txt")
 
-COLLECTION_NAME = "math_note_V7"          # 正式库（agent.py 用的就是这个）
+COLLECTION_NAME = "math_note_v8"         # 正式库（agent.py 用的就是这个）
 COMPARE_NAME = "math_note_500_V3"         # 对照库（留着证明"语义稀释"那个 A/B 结论）
 
 # ===== 读资料 =====

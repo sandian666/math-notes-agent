@@ -1,14 +1,24 @@
 # ===== S5 / main.py =====
-from fastapi import FastAPI
+from fastapi import FastAPI,Request
 from agent import answer_cached,stream_answer
 from fastapi.responses import HTMLResponse,StreamingResponse
-import uvicorn,os,base64,asyncio,time
+import uvicorn,os,base64,asyncio,time,uuid
 
 S5_USER = os.environ.get("S5_USER", "demo") #用户名；没配就默认 demo
 S5_PASSWORD = os.environ.get("S5_PASSWORD")  # 口令不给默认值（拿不到就是 None）
 
 # 引导页 + cookie
 COOKIE_NAME = "s5_ok"        # 口令通过后发给浏览器的"小凭证"的名字
+COOKIE_UID = "s5_uid"
+
+
+def _ensure_uid(request, response):
+    if not request.cookies.get(COOKIE_UID):
+        response.set_cookie(COOKIE_UID, uuid.uuid4().hex,
+                            httponly=True, max_age=180*86400, samesite="lax")
+    return response
+       
+
 
 LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -177,19 +187,19 @@ app = FastAPI(lifespan=app_lifespan)   # 创建一个 FastAPI 应用，并告诉
 async def require_password(request, call_next):
     # ① 之前输对过 → 浏览器带着 cookie 来了 → 直接放行
     if S5_PASSWORD and request.cookies.get(COOKIE_NAME) == S5_PASSWORD:
-        return await call_next(request)
+        return _ensure_uid(request, await call_next(request))
 
     # ② 网址里带了口令（?k=口令：点开"口令进链接"或用引导页提交）
     #    → 放行，并顺手发一个 cookie，让页面里的 fetch 之后也认得出他
     if S5_PASSWORD and request.query_params.get("k") == S5_PASSWORD:
-        response = await call_next(request)
+        response = _ensure_uid(request, await call_next(request))
         response.set_cookie(COOKIE_NAME, S5_PASSWORD, httponly=True)
         return response
 
     # ③ 老路：Basic 认证头（浏览器弹框那条）—— 保留兼容，简历口径不废
     expected = "Basic " + base64.b64encode(f"{S5_USER}:{S5_PASSWORD}".encode()).decode()
     if S5_PASSWORD and request.headers.get("authorization") == expected:
-        return await call_next(request)
+        return _ensure_uid(request, await call_next(request))
 
     # ④ 都没有 → 返回"只有口令框"的引导页（不再返回 401 弹框）
     #    带了 k 还是走到这里 = 口令填错了 → 页面上给一句提示
@@ -202,14 +212,16 @@ async def hello():    # ← 定义当一个请求打到 /hello 时，要执行�
     return "你好，这是 S5 的第一个接口。"
 
 @app.get("/ask")  #函数签名：接收两个参数，名字叫question和session_id,类型是 str
-async def ask(question: str,session_id:str):
-    resp = await answer_cached(session_id,question)
+async def ask(question: str,session_id:str,request:Request):
+    user_key = request.cookies.get(COOKIE_UID, "anon")   # 每人一把账本
+    resp = await answer_cached(session_id,question,user_key)
     return {"answer": resp}
 
 @app.get("/ask_stream")
-async def ask_stream(question:str,session_id:str):
+async def ask_stream(question:str,session_id:str,request:Request):
     print(f"📥 /ask_stream 收到请求：question={question!r} session={session_id!r}")
-    return StreamingResponse(stream_answer(session_id,question),
+    user_key = request.cookies.get(COOKIE_UID, "anon")
+    return StreamingResponse(stream_answer(session_id,question,user_key),
       media_type="text/event-stream",)   # 告诉浏览器“我在推SSE”
 
 
