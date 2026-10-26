@@ -33,8 +33,9 @@ import time
 import unicodedata
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = S5 目录
-sys.path.insert(0, BASE_DIR)          # 保证 `import agent` 找得到
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = S5 项目根
+APP_DIR = os.path.join(BASE_DIR, "code")   # 代码都在这
+sys.path.insert(0, APP_DIR)               # 保证 `import agent` 找得到
 # 前置检查：agent 一 import 就会读这几个环境变量，缺了会抛 KeyError，很难看懂 → 先说清楚
 _NEEDED_ENV = ["ZHIPU_API_KEY", "DEEPSEEK_API_KEY", "S6_DB_PASSWORD"]
 _missing = [k for k in _NEEDED_ENV if not os.environ.get(k)]

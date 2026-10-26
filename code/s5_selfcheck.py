@@ -1,3 +1,11 @@
+"""S5 内容自检：15 道数学题过一遍 graph_answer，看关键词命中率。
+
+用法（在 S5 目录，会真的调用模型 → 花钱）：
+    python code/s5_selfcheck.py
+
+判读：命中率低不一定是模型差 —— 先看命中的是"答案里有没有这个词"，
+     答案写对了但换了个说法，也会判成 ✗。它是冒烟测试，不是评分器。
+"""
 import asyncio
 import time
 from agent import graph_answer

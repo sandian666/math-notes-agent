@@ -1,9 +1,11 @@
-"""S5 探针脚本：跑一轮问答，打印后立刻硬退出（不用按 Ctrl+C）。
+"""S5 对话入口：命令行跑一轮问答，打印完整回答后立刻硬退出（不用按 Ctrl+C）。
+
+（原名 probe_run.py —— 它不是"探针"，是日常手动对话的主入口；`s5_run.cmd` 就是调它。）
 
 用法（在 S5 目录）：
-    python probe_run.py "北京今天天气怎么样"         # session_id 自动生成，绝不撞历史
-    python probe_run.py "现在几点" --sid probe-x   # 指定 session_id（想复用同一会话时）
-    python probe_run.py --info probe-103045        # 只看该会话历史，不产生新回答
+    python code/s5_chat.py "北京今天天气怎么样"         # session_id 自动生成，绝不撞历史
+    python code/s5_chat.py "现在几点" --sid probe-x   # 指定 session_id（想复用同一会话时）
+    python code/s5_chat.py --info probe-103045        # 只看该会话历史，不产生新回答
 
 这个脚本自带三件"环境准备"，所以命令里不需要任何 $env: 前缀：
   1) 关掉 chromadb 遥测（必须在 import agent 之前设置）
@@ -41,13 +43,13 @@ def _new_sid():
 async def main():
     argv = sys.argv[1:]
     if not argv:
-        print('用法: probe_run.py "<问题>" [--sid 会话id]')
-        print('      probe_run.py --info <会话id>')
+        print('用法: s5_chat.py "<问题>" [--sid 会话id]')
+        print('      s5_chat.py --info <会话id>')
         return
 
     if argv[0] == "--info":
         if len(argv) < 2:
-            print("要给会话 id：probe_run.py --info probe-103045")
+            print("要给会话 id：s5_chat.py --info probe-103045")
             return
         await agent.thread_info(argv[1])
     else:

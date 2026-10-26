@@ -1,4 +1,4 @@
-# ===== S8 / stress_p95.py — 并发压测：p50/p95/p99 + 失败率 + 拦截/命中统计 =====
+# ===== S5 / s5_stress.py — 并发压测：p50/p95/p99 + 失败率 + 拦截/命中统计 =====
 """两种模式，两种用途：
 
   --mock   只压【框架开销】（两级缓存 + 限流闸门），不打模型 → 零成本，看闸门本身加了几个毫秒
@@ -10,9 +10,9 @@
   3. 每条请求一个全新 session_id：有记忆的系统里复用会话 → 历史越滚越大，压的是 token 不是并发。
 
 用法（在 S5 目录下，用 venv 解释器）：
-  .venv\\Scripts\\python.exe stress_p95.py --mock --n 200 --conc 20
-  .venv\\Scripts\\python.exe stress_p95.py --n 6 --conc 1
-  .venv\\Scripts\\python.exe stress_p95.py --n 6 --conc 6
+  .venv\\Scripts\\python.exe code/s5_stress.py --mock --n 200 --conc 20
+  .venv\\Scripts\\python.exe code/s5_stress.py --n 6 --conc 1
+  .venv\\Scripts\\python.exe code/s5_stress.py --n 6 --conc 6
 """
 import argparse, asyncio, os, sys, time
 

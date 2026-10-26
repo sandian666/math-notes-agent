@@ -13,9 +13,9 @@ from langgraph.types import interrupt, Command
 
 # ================= 常量与路径（改造 A） =================
 # 把"当前文件所在的文件夹"取出来，得到本py文件所在文件夹，作为基准路径，程序以后放哪里都能跑
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = S5 项目根（代码都在「code」文件夹里，所以"项目根"= 本文件所在目录的上一级；data/ static/ logs/ 都在根上）
 # 拼接出配置文件、向量库目录的绝对路径，防止运行位置改变导致找不到文件
-COLLECTION_FILE = os.path.join(BASE_DIR, "current_collection.txt")     # ← 以"文件自己"为基准
+COLLECTION_FILE = os.path.join(BASE_DIR, "data", "current_collection.txt")     # ← 以"文件自己"为基准
 CHROMA_DIR      = os.path.join(BASE_DIR, "chroma_db")                  # ← 跟工作目录【无关
 
 with open(COLLECTION_FILE,encoding="utf-8") as f:
@@ -112,7 +112,7 @@ def calculate(a: int, b: int, op: Literal["+", "-", "*", "/"]) -> str:
         return f"不支持的运算符：{op}"
 
 
-NOTES_FILE = os.path.join(BASE_DIR, "my_notes.txt")
+NOTES_FILE = os.path.join(BASE_DIR, "data", "my_notes.txt")
 
 def save_note(note: str) -> str:
     """把一条内容追加保存到本地笔记文件 my_notes.txt。这是写操作，重复调用会多出一条。"""
@@ -251,7 +251,7 @@ _lc_builder.add_conditional_edges("model", lc_should_continue, {"tools": "tools"
 _lc_builder.add_edge("tools", "model")             # 🔴 环
 # 🔴 懒加载：模块导入时还没有事件循环，AsyncSqliteSaver 构造会直接报错；
 #    所以等到"第一次真的要用图"（也就是第一次请求）时才连库 + 装配。
-_CHECKPOINT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions_lc.db")
+_CHECKPOINT_DB = os.path.join(BASE_DIR, "data", "sessions_lc.db")
 _graph_mem = None      # 装配好的"带记忆的图"
 _saver = None          # 留个引用，别被垃圾回收
 _conn = None           # 新增：留个引用，关停时要用它 close()

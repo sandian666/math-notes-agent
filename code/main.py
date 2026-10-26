@@ -227,8 +227,9 @@ async def ask_stream(question:str,session_id:str,request:Request):
 
 @app.get("/",response_class=HTMLResponse)
 async def index():
-    current_dir=os.path.dirname(os.path.abspath(__file__))  #得到本文件夹路径去
-    html_path=os.path.join(current_dir,"index.html")   #把本文件夹路径和网页路径拼在一起
+    # 代码在 code/ 里，网页在上一级的 static/ 里
+    current_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_path=os.path.join(current_dir,"static","index.html")   #把本文件夹路径和网页路径拼在一起
     with open(html_path,"r", encoding="utf-8" ) as f:
         return f.read()
 

@@ -27,4 +27,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 6. 容器启动时执行：先建库建表（init_db 幂等），再起服务
-CMD ["sh", "-c", "python init_db.py && python main.py"]
+CMD ["sh", "-c", "python code/s5_setup.py --mysql && python code/main.py"]

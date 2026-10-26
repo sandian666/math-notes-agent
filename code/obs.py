@@ -29,7 +29,7 @@ import json
 import os
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = S5 项目根
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 RUN_LOG = os.path.join(LOG_DIR, "run.jsonl")
 
