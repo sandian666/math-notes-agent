@@ -458,16 +458,35 @@ async def answer_cached(session_id, question, user_key=""):
 REF_TAG = "[[REF]]"
 ERR_TAG = "[[ERR]]"
 
+# 命中缓存后"假装流式"的每片字数。太小 → 帧数爆炸；太大 → 看不出在流。
+CACHE_STREAM_CHUNK = 24
+
+
+def _cache_pieces(text, size=CACHE_STREAM_CHUNK):
+    """把整段答案切成小片，模拟流式推给前端。
+
+    🔴 换行必须压成空格：SSE 靠空行分帧，正文里带 \\n 会把一帧切成两帧（前端会漏字）。
+    """
+    t = (text or "").replace("\n", " ")
+    for i in range(0, len(t), size):
+        yield t[i:i + size]
+
+
 async def stream_answer(session_id, question,user_key=""):
     """图版流式：把 while True 换成 agent_graph.astream"""
     # 🔴 批④ 4-1b：旧的 `cache_key = (session_id, question)` 缓存已【退役】——
     #    它的键里没有历史指纹，同会话同问第二次会端出旧答案（脏读）。
-    #    流式通道暂不做结果缓存：它的"完整性"和"有副作用"难以判定，
-    #    🔴 不确定能否正确失效时，宁可不写缓存。要加就统一走 cache.py 的正确键（待办）。
+    #    批④ 4-1c（本次）：流式通道接了 cache.py 的正确键（版本+模型+历史指纹+归一化问题）。
+    #    命中时三件事必须一起做，缺一件就是一轮 bug：
+    #      ① 分片推给前端（接口契约不变，看起来还是流式）
+    #      ② 补写 checkpoint（否则这一问一答不进历史 → 下一轮"失忆"，mt-05 同类）
+    #      ③ 记额度 + 记观测（cache_hit=True，cache_where 标明从 L1 还是 L2 命中）
     text_buf = ""          # 攒这一轮的正文（用来写 qa_log）
     n_text = 0
     stream_ok = False      # 只有"整段跑完"才允许写缓存 / 记账
     refs = []              # 本轮检索命中的笔记小节（去重，最多给前端 3 个）
+    ck = None              # 本轮缓存键；None = 没开缓存 / 没算（eg 依赖挂了提前异常）
+    interrupted = False    # 本轮是否停在人工确认点（停了就绝不能写缓存）
 
     # 🔴 外层 try（2026-10-16 补）：原来 used_today() 和 _get_graph() 在 try 外面，
     #    依赖一挂（MySQL 没起、图装配失败）异常就直接穿透生成器 →
@@ -480,6 +499,43 @@ async def stream_answer(session_id, question,user_key=""):
 
         graph = await _get_graph()
         cfg = {"configurable": {"thread_id": session_id}}
+
+        # ===== 批④ 4-1c：进图之前先查一次缓存（与 graph_answer 完全同一套 key）=====
+        # 🔴 开关关着时连 aget_state 都不调：那是多一次 SQLite 读，没开缓存就不该付。
+        if cache.enabled() and question:
+            # key 里含"历史指纹"(n_history)，所以必须先数一遍历史；
+            # 不数就会出现"同一个问题在不同轮次命中同一条答案"—— 那是脏读，不是加速。
+            snap = await graph.aget_state(cfg)
+            n_before = len(snap.values.get("messages", []))
+            ck = cache.make_key(question, session_id, n_before)
+            hit_text, where = cache.default().get(ck)
+            if hit_text is not None:
+                t_hit = time.monotonic()
+                print(f"⚡ [图-流] 缓存命中（{where}）：session={session_id} 字数={len(hit_text)}")
+                # ① 分片推给前端：前端只认 data: 帧，它不知道这是缓存
+                for piece in _cache_pieces(hit_text):
+                    yield f"data: {piece}\n\n"
+                # ② 补写会话：和图里正常跑完的效果对齐（human + ai 两条消息）
+                try:
+                    await graph.aupdate_state(cfg, {"messages": [
+                        HumanMessage(question), AIMessage(hit_text),
+                    ]})
+                except Exception as e:
+                    # 补写失败只影响"下一轮的上下文"，这一次的答案已经推完了，不能让用户看到报错
+                    print(f"⚠️ [图-流] 命中后补写会话失败（本轮答案不受影响）：{type(e).__name__}: {e}")
+                # ③ 记账 + 观测：额度和 qa_log 都按"真的发生了一次问答"处理
+                try:
+                    await quota_db.count_one(user_key, question, hit_text)
+                except Exception as e:
+                    print(f"❌ [额度] 记账失败（本次回答不受影响）：{type(e).__name__}: {e}")
+                obs.log_event(kind="answer", session_id=session_id, question=question, resume=None,
+                              text=hit_text, cache_hit=True,
+                              usage={"input": 0, "output": 0, "total": 0}, tools=[], n_tool_calls=0,
+                              retries=[], timeout=False, interrupt=False,
+                              latency_ms=round((time.monotonic() - t_hit) * 1000),
+                              cache_where=where, cache_mode=cache.default().mode)
+                return
+        # ===== 没命中（或没开缓存）→ 正常跑图 =====
 
         print(f"🔎 [图-流] 开始：session={session_id} question={question!r}")
         async for mode, payload in graph.astream(
@@ -499,6 +555,9 @@ async def stream_answer(session_id, question,user_key=""):
                     for name in re.findall(r"（来源：([^）]+)）", chunk.content):
                         if name not in refs:
                             refs.append(name)
+            elif mode == "values" and isinstance(payload, dict) and payload.get("__interrupt__"):
+                # 🔴 图停在人工确认点：这一轮没答完，写缓存等于把"半截答案+等你确认"存成标准答案
+                interrupted = True
         stream_ok = True
         print(f"🔎 [图-流] 结束：正文片数={n_text} 依据={refs}")
         if refs:                                    # ④ 末尾多推一帧"依据"（前端不当正文看）
@@ -512,7 +571,13 @@ async def stream_answer(session_id, question,user_key=""):
             yield f"data: {ERR_TAG}服务暂时不可用，请稍后再试一次\n\n"
 
     if text_buf and stream_ok:                               # ④ 整段答成才记账
-        # 4-1b：这里原来还会写 _answer_cache（旧键，已退役）；流式通道不再做结果缓存。
+        # 4-1c：整段跑完才写缓存 —— 中途断流、或停在人工确认点，都绝不写：
+        #   否则半截答案会被当成完整答案反复端出去（图里那两道闸门是同样的道理）。
+        if ck and not interrupted:
+            try:
+                cache.default().set(ck, text_buf)
+            except Exception as e:
+                print(f"⚠️ [图-流] 写缓存失败（不影响本轮答案）：{type(e).__name__}: {e}")
         try:
             await quota_db.count_one(user_key,question, text_buf)
         except Exception as e:
